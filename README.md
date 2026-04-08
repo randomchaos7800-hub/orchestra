@@ -80,7 +80,7 @@ That's it. No databases. No Docker. No Kubernetes. No managed services.
 
 ```bash
 # Clone
-git clone https://github.com/vitale-dynamics/orchestra.git
+git clone https://github.com/randomchaos7800-hub/orchestra.git
 cd orchestra
 
 # Install dependencies
