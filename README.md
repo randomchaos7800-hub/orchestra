@@ -48,10 +48,11 @@ Your conversations (Claude, ChatGPT, any export)
 Your research notes, articles, papers
      │
      ▼
-  Wiki (compile.py)
+  Wiki (tools/compile.py)
   - Reads raw/ directory
   - Classifies and compiles via LLM
   - Writes structured wiki articles
+  - Injects reciprocal backlinks
   - Maintains index + cross-references
   - Flags stale/orphaned articles in meta/
      │
@@ -61,11 +62,13 @@ Your research notes, articles, papers
   - Master index (_index.md)
   - Source tracking (_sources.json)
   - Self-monitoring (meta/stale.md, meta/orphans.md, meta/suggestions.md)
+  - Graph repair (tools/repair.py)
+  - Health monitoring (tools/health.py)
 ```
 
 ## What You Need
 
-- Python 3.10+ with `openai` and `httpx`
+- Python 3.10+ with `openai`, `httpx`, and `pyyaml`
 - One of:
   - A local llama-server (or any OpenAI-compatible local endpoint)
   - An OpenRouter API key
@@ -84,11 +87,10 @@ git clone https://github.com/randomchaos7800-hub/orchestra.git
 cd orchestra
 
 # Install dependencies
-pip install openai httpx
+pip install -r requirements.txt
 
-# Configure your LLM endpoint
-cp config/config.example.json config/config.json
-# Edit config.json: set your local endpoint or API key
+# Run the setup wizard (creates directory structure + config)
+python setup.py
 
 # Export your conversations
 # Claude: Settings → Account → Export Data
@@ -98,17 +100,43 @@ cp config/config.example.json config/config.json
 python capture/extract.py --input /path/to/your/export/
 
 # Drop research notes into raw/
-cp your-notes/*.md wiki/raw/manual/
+cp your-notes/*.md raw/manual/
 
 # Compile the wiki
-python wiki/compile.py
+python tools/compile.py
+
+# Check wiki health
+python tools/health.py
+
+# Repair link graph (fix orphans, dead links, inject reciprocal backlinks)
+python tools/repair.py
+
+# Search the wiki
+python tools/search.py "transformer attention"
+
+# Run tests
+pip install pytest
+pytest tests/ -v
 
 # (Optional) Automate with cron
 # 2 AM — process new conversation exports
 # 0 2 * * * cd /path/to/orchestra && python capture/extract.py --input /path/to/exports/
 # 9 PM — compile wiki from new raw inputs
-# 0 21 * * * cd /path/to/orchestra && python wiki/compile.py
+# 0 21 * * * cd /path/to/orchestra && python tools/compile.py
 ```
+
+## Tools
+
+| Tool | What It Does |
+|------|-------------|
+| `capture/extract.py` | Ingest conversation exports (Claude, ChatGPT, generic JSON). Classify and append to project files. |
+| `tools/compile.py` | Compile raw research notes into wiki articles. Two-pass LLM pipeline with backlink injection. |
+| `tools/health.py` | Full wiki health report — orphans, dead links, stale articles, link type distribution. |
+| `tools/repair.py` | One-shot graph repair — reciprocal backlinks, dead link pruning, duplicate merging, alias resolution. |
+| `tools/search.py` | Full-text search across wiki articles. Filter by tag or section. |
+| `tools/query.py` | Natural language Q&A against the wiki using LLM. Supports markdown and Marp slide output. |
+| `tools/healthcheck.py` | Detailed health check with optional LLM-assisted gap analysis and suggestions. |
+| `setup.py` | Setup wizard — creates directory structure, initializes config. |
 
 ## Documentation
 
@@ -151,15 +179,15 @@ The entire reason this system was built is that AI-generated summaries and knowl
 
 **Currently supported:**
 - Claude.ai conversation exports (JSON)
+- ChatGPT conversation exports (JSON)
+- Generic JSON format (list of `{title, messages: [{role, content}]}`)
 
-**Planned / community contributions welcome:**
-- ChatGPT export format
+**Community contributions welcome:**
 - Slack export format
 - Telegram export format
-- Generic JSON conversation format
 - Plain text / markdown conversation logs
 
-The extraction script is format-agnostic at its core — it needs a conversation broken into messages with roles and content. Adding a new format means writing a parser that produces that structure.
+The extraction script auto-detects the format. Each parser lives in `capture/parsers/` and normalizes conversations into a common structure. Adding a new format means writing one parser function.
 
 ## What This Is Not
 

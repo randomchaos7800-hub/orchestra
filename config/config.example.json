@@ -1,0 +1,26 @@
+{
+  "llm": {
+    "local_url": "http://127.0.0.1:8081/v1",
+    "local_model": "gemma4",
+    "local_max_tokens": 6000,
+    "fallback_url": "https://openrouter.ai/api/v1",
+    "fallback_model": "z-ai/glm-4.7-flash",
+    "fallback_api_key_env": "OPENROUTER_API_KEY"
+  },
+  "capture": {
+    "projects": {
+      "PROJECTS": "Concrete decisions and architecture for active projects.",
+      "RESEARCH": "External research, papers, model releases, findings.",
+      "STRATEGY": "Direction, planning, positioning, revenue strategy.",
+      "GENERAL": "Cross-cutting insights that don't fit a specific project.",
+      "SPECULATIVE": "Ideas ahead of current tech -- half-formed, not yet buildable."
+    },
+    "skip_titles": [],
+    "min_messages": 3,
+    "max_conversation_chars": 12000
+  },
+  "wiki": {
+    "sections": ["concepts", "entities", "events", "research", "tools"],
+    "stale_days": 30
+  }
+}
