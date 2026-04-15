@@ -14,9 +14,13 @@ Usage:
 """
 
 import argparse
+import fcntl
 import json
 import os
+import re
 import sys
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +31,95 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 PROJECTS_DIR = PROJECT_ROOT / "capture" / "projects"
 PROCESSED_PATH = PROJECT_ROOT / "capture" / "processed.json"
+
+
+# ---------------------------------------------------------------------------
+# Robust JSON parsing
+# ---------------------------------------------------------------------------
+
+def _parse_llm_json(raw: str) -> dict | None:
+    """Parse LLM output as JSON with fallbacks for common formatting issues.
+
+    1. Strip markdown code fences (```json ... ```)
+    2. Try json.loads directly
+    3. Fall back to regex extraction of first {...} block
+    4. Return None on failure (never crashes)
+    """
+    # Strip markdown code fences
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+        cleaned = cleaned.strip()
+
+    # Try direct parse
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Regex fallback: extract first {...} block (greedy, handles nested braces)
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    print(f"  WARNING: failed to parse LLM JSON response ({len(raw)} chars)", file=sys.stderr)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Output sanitization
+# ---------------------------------------------------------------------------
+
+def _sanitize_content(text: str) -> str:
+    """Sanitize LLM-generated content before writing to disk.
+
+    - Strips null bytes
+    - Strips control characters (preserves newlines and tabs)
+    - Limits length to 10000 chars
+    """
+    # Strip null bytes
+    text = text.replace("\x00", "")
+    # Strip control characters except \n (0x0a) and \t (0x09)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    # Limit length
+    if len(text) > 10000:
+        text = text[:10000] + "\n[... truncated ...]"
+    return text
+
+
+# ---------------------------------------------------------------------------
+# File locking
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _locked_open(path, mode="a"):
+    """Open file with exclusive lock to prevent concurrent write corruption."""
+    with open(path, mode, encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield f
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------------------
+# File path validation
+# ---------------------------------------------------------------------------
+
+_VALID_PROJECT_RE = re.compile(r"^[A-Z][A-Z0-9_-]*$")
+
+
+def _validate_project_name(name: str) -> bool:
+    """Validate project name to prevent path traversal attacks."""
+    if not _VALID_PROJECT_RE.match(name):
+        return False
+    if "/" in name or "\\" in name or ".." in name or "." in name:
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -273,15 +366,10 @@ Only include entries worth preserving. Quality over quantity. If nothing is wort
             messages=[{"role": "user", "content": prompt}],
         )
         raw = (response.choices[0].message.content or "").strip()
-        # Strip markdown code fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        return json.loads(raw.strip())
-    except json.JSONDecodeError as e:
-        print(f"  ERROR parsing LLM response for '{title}': {e}")
-        return None
+        result = _parse_llm_json(raw)
+        if result is None:
+            print(f"  ERROR parsing LLM response for '{title}'")
+        return result
     except Exception as e:
         print(f"  ERROR extracting '{title}': {e}")
         return None
@@ -294,8 +382,18 @@ def append_to_project(
     conv_title: str,
     content: str,
     trigger: str = "",
+    conv_id: str = "",
 ) -> None:
     """Append an entry to a project markdown file."""
+    # Validate project name to prevent path traversal
+    if not _validate_project_name(project):
+        print(f"  ERROR: invalid project name '{project}' -- skipping", file=sys.stderr)
+        return
+
+    # Sanitize content before writing
+    content = _sanitize_content(content)
+    title = _sanitize_content(title)
+
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     project_file = PROJECTS_DIR / f"{project}.md"
 
@@ -303,9 +401,12 @@ def append_to_project(
     if trigger and project == "SPECULATIVE":
         trigger_line = f"**Trigger:** {trigger}\n"
 
-    entry = f"\n## {date} - {title}\n**Source:** {conv_title}\n{trigger_line}\n{content}\n\n---\n"
+    captured_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    meta_line = f"**Source:** {conv_title} | **ID:** {conv_id} | **Captured:** {captured_ts}"
 
-    with open(project_file, "a", encoding="utf-8") as f:
+    entry = f"\n## {date} - {title}\n{meta_line}\n{trigger_line}\n{content}\n\n---\n"
+
+    with _locked_open(project_file, "a") as f:
         f.write(entry)
 
 
@@ -434,7 +535,7 @@ def main() -> None:
                 print(f"       -> [{proj}] {entry_title[:50]}{tag}")
                 print(f"          {content[:120]}...")
             else:
-                append_to_project(proj, date, entry_title, title, content, trigger)
+                append_to_project(proj, date, entry_title, title, content, trigger, conv_id=conv_id)
                 tag = f" [trigger: {trigger[:40]}]" if trigger else ""
                 print(f"       -> [{proj}] {entry_title[:50]}{tag}")
 

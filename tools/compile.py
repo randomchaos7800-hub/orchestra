@@ -18,11 +18,13 @@ Usage:
 """
 
 import argparse
+import fcntl
 import json
 import logging
 import os
 import re
 import sys
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -49,6 +51,19 @@ INVERSE_TYPES = {
     "references": "referenced_by",
     "related": "related",
 }
+
+
+# -- File locking --------------------------------------------------------------
+
+@contextmanager
+def _locked_open(path, mode="a"):
+    """Open file with exclusive lock to prevent concurrent write corruption."""
+    with open(path, mode, encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield f
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 # -- LLM config loading -------------------------------------------------------
@@ -133,7 +148,8 @@ def _load_sources() -> dict:
 
 
 def _save_sources(sources: dict) -> None:
-    SOURCES_FILE.write_text(json.dumps(sources, indent=2))
+    with _locked_open(SOURCES_FILE, "w") as f:
+        f.write(json.dumps(sources, indent=2))
 
 
 def _mark_processed(sources: dict, raw_path: Path, articles_touched: list[str]) -> None:
@@ -503,7 +519,8 @@ def _write_stale_report(stale: list[dict], wiki_dir: Path) -> None:
                 f"via `{s['newest_source']}`"
             )
 
-    stale_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with _locked_open(stale_file, "w") as f:
+        f.write("\n".join(lines) + "\n")
     logger.info(f"Stale report written: {len(stale)} stale article(s)")
 
 
@@ -575,18 +592,42 @@ def _rebuild_index(index: dict[str, dict], summaries: dict[str, str]) -> None:
             lines.append(entry)
         lines.append("")
 
-    INDEX_FILE.write_text("\n".join(lines), encoding="utf-8")
+    with _locked_open(INDEX_FILE, "w") as f:
+        f.write("\n".join(lines))
     logger.info(f"Index rebuilt: {total} articles")
 
 
 # -- Strip JSON fence ----------------------------------------------------------
 
 def _strip_json_fence(raw: str) -> str:
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw)
-    return raw.strip()
+    """Strip markdown code fences and extract JSON.
+
+    Falls back to regex extraction of first {...} block if direct parse fails.
+    """
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+    cleaned = cleaned.strip()
+
+    # Verify it's valid JSON; if not, try regex extraction
+    try:
+        json.loads(cleaned)
+        return cleaned
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Regex fallback: extract first {...} block
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        try:
+            json.loads(m.group(0))
+            return m.group(0)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    logger.warning(f"_strip_json_fence: could not extract valid JSON ({len(raw)} chars)")
+    return cleaned
 
 
 # -- Compile a single raw file -------------------------------------------------
@@ -817,7 +858,8 @@ Use [[type:slug]] or [[slug]] syntax for cross-references."""
             content = re.sub(r"\n?```$", "", content).strip()
 
         article_path.parent.mkdir(parents=True, exist_ok=True)
-        article_path.write_text(content, encoding="utf-8")
+        with _locked_open(article_path, "w") as f:
+            f.write(content)
         logger.info(f"  {action.upper()}: {path_str}")
         touched.append(path_str)
         if summary:
