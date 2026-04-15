@@ -136,7 +136,10 @@ pytest tests/ -v
 | `tools/search.py` | Full-text search across wiki articles. Filter by tag or section. |
 | `tools/query.py` | Natural language Q&A against the wiki using LLM. Supports markdown and Marp slide output. |
 | `tools/healthcheck.py` | Detailed health check with optional LLM-assisted gap analysis and suggestions. |
+| `tools/split.py` | Split large project files by year into archives. Prevents bloat. |
 | `setup.py` | Setup wizard — creates directory structure, initializes config. |
+
+Both `capture/extract.py` and `tools/compile.py` support `--git` to auto-commit changes after each run.
 
 ## Documentation
 

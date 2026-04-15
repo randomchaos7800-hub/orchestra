@@ -925,6 +925,11 @@ def main():
         action="store_true",
         help="Recompile articles whose source material is newer than their last_compiled date",
     )
+    parser.add_argument(
+        "--git",
+        action="store_true",
+        help="Auto-commit changes to git after compilation",
+    )
     args = parser.parse_args()
 
     if args.verbose:
@@ -1033,6 +1038,21 @@ def main():
         else:
             logger.info("Stale: 0 articles -- all current")
         _write_stale_report(stale, WIKI_DIR)
+
+    # Git auto-commit
+    if getattr(args, "git", False) and not args.dry_run:
+        import subprocess
+        try:
+            subprocess.run(["git", "add", "wiki/", "raw/"],
+                          cwd=str(KB_ROOT), capture_output=True, check=True)
+            msg = f"compile: {total_articles} article(s) from {len(raw_files)} source(s)"
+            subprocess.run(["git", "commit", "-m", msg],
+                          cwd=str(KB_ROOT), capture_output=True, check=True)
+            logger.info(f"Git: committed ({msg})")
+        except subprocess.CalledProcessError:
+            logger.info("Git: nothing to commit or git not available")
+        except FileNotFoundError:
+            logger.info("Git: git command not found")
 
 
 if __name__ == "__main__":

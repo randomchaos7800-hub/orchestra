@@ -433,6 +433,11 @@ def main() -> None:
         default=None,
         help="Path to config.json (default: config/config.json in project root)",
     )
+    parser.add_argument(
+        "--git",
+        action="store_true",
+        help="Auto-commit changes to git after capture",
+    )
     args = parser.parse_args()
 
     # Load config
@@ -561,6 +566,21 @@ def main() -> None:
     print(f"Errors:              {stats['errors']}")
     if args.dry_run:
         print("[DRY RUN] No files were modified.")
+
+    # Git auto-commit
+    if args.git and not args.dry_run and stats["entries_written"] > 0:
+        import subprocess
+        try:
+            subprocess.run(["git", "add", "projects/", "capture/processed.json"],
+                          cwd=str(PROJECT_ROOT), capture_output=True, check=True)
+            msg = f"capture: {stats['entries_written']} entries from {stats['processed']} conversations"
+            subprocess.run(["git", "commit", "-m", msg],
+                          cwd=str(PROJECT_ROOT), capture_output=True, check=True)
+            print(f"Git: committed ({msg})")
+        except subprocess.CalledProcessError:
+            print("Git: nothing to commit or git not available")
+        except FileNotFoundError:
+            print("Git: git command not found")
 
 
 if __name__ == "__main__":
