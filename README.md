@@ -108,6 +108,9 @@ python tools/compile.py
 # Check wiki health
 python tools/health.py
 
+# Check with LLM gap analysis
+python tools/health.py --suggest
+
 # Repair link graph (fix orphans, dead links, inject reciprocal backlinks)
 python tools/repair.py
 
@@ -131,11 +134,10 @@ pytest tests/ -v
 |------|-------------|
 | `capture/extract.py` | Ingest conversation exports (Claude, ChatGPT, generic JSON). Classify and append to project files. |
 | `tools/compile.py` | Compile raw research notes into wiki articles. Two-pass LLM pipeline with backlink injection. |
-| `tools/health.py` | Full wiki health report — orphans, dead links, stale articles, link type distribution. |
+| `tools/health.py` | Full wiki health report — orphans, dead links, stale articles, unwritten concepts, LLM gap analysis. |
 | `tools/repair.py` | One-shot graph repair — reciprocal backlinks, dead link pruning, duplicate merging, alias resolution. |
 | `tools/search.py` | Full-text search across wiki articles. Filter by tag or section. |
 | `tools/query.py` | Natural language Q&A against the wiki using LLM. Supports markdown and Marp slide output. |
-| `tools/healthcheck.py` | Detailed health check with optional LLM-assisted gap analysis and suggestions. |
 | `tools/split.py` | Split large project files by year into archives. Prevents bloat. |
 | `setup.py` | Setup wizard — creates directory structure, initializes config. |
 

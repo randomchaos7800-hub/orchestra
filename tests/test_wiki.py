@@ -8,10 +8,18 @@ No real LLM calls.
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from lib.common import (
+    parse_frontmatter,
+    extract_wikilink_slugs as extract_wikilinks,
+    LINK_TYPES,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -19,42 +27,8 @@ import pytest
 
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 TYPED_WIKILINK_RE = re.compile(r"\[\[(\w+):([^\]]+)\]\]")
-FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
 
-VALID_LINK_TYPES = {"references", "depends_on", "extends", "contradicts", "related"}
-
-
-def parse_frontmatter(text: str) -> dict:
-    """Parse YAML frontmatter from article text."""
-    if not text.startswith("---"):
-        return {}
-    end = text.find("---", 3)
-    if end == -1:
-        return {}
-    fm_text = text[3:end].strip()
-    result = {}
-    for line in fm_text.splitlines():
-        if ":" not in line:
-            continue
-        k, _, v = line.partition(":")
-        k = k.strip()
-        v = v.strip()
-        if v.startswith("[") and v.endswith("]"):
-            v = [x.strip().strip('"').strip("'") for x in v[1:-1].split(",") if x.strip()]
-        result[k] = v
-    return result
-
-
-def extract_wikilinks(text: str) -> list[str]:
-    """Extract all wikilink targets from text (both bare and typed)."""
-    links = []
-    for match in WIKILINK_RE.finditer(text):
-        target = match.group(1)
-        # Strip type prefix if present
-        if ":" in target:
-            target = target.split(":", 1)[1]
-        links.append(target)
-    return links
+VALID_LINK_TYPES = set(LINK_TYPES)
 
 
 def create_article(wiki_dir: Path, section: str, slug: str,
@@ -161,7 +135,7 @@ class TestFrontmatter:
         assert fm["title"] == "Test Concept"
         assert "ai" in fm["tags"]
         assert "agents" in fm["tags"]
-        assert fm["updated"] == "2026-04-09"
+        assert str(fm["updated"]) == "2026-04-09"
         assert isinstance(fm["sources"], list)
 
     def test_missing_frontmatter(self):
@@ -240,7 +214,7 @@ class TestWikilinkExtraction:
     def test_multiple_wikilinks(self):
         text = "See [[foo]], [[extends:bar]], and [[baz]]."
         links = extract_wikilinks(text)
-        assert links == ["foo", "bar", "baz"]
+        assert set(links) == {"foo", "bar", "baz"}
 
     def test_no_wikilinks(self):
         text = "No links here, just plain text."

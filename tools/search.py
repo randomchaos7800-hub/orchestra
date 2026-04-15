@@ -16,39 +16,36 @@ import re
 import sys
 from pathlib import Path
 
-KB_ROOT = Path(__file__).parent.parent
-WIKI_DIR = KB_ROOT / "wiki"
-INDEX_FILE = WIKI_DIR / "_index.md"
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-CONTEXT_LINES = 2  # lines of context to show around each match
+from lib.common import WIKI_DIR, INDEX_FILE, parse_frontmatter
+
+CONTEXT_LINES = 2
 
 
 def search_index(query: str) -> list[dict]:
-    """Search only _index.md (fast, for quick lookups)."""
+    """Search only _index.md (fast)."""
     if not INDEX_FILE.exists():
         return []
-
-    results = []
     pattern = re.compile(re.escape(query), re.IGNORECASE)
-    for line in INDEX_FILE.read_text(encoding="utf-8").splitlines():
-        if pattern.search(line):
-            results.append({"file": "_index.md", "line": line.strip(), "context": []})
-    return results
+    return [
+        {"file": "_index.md", "line": line.strip(), "context": []}
+        for line in INDEX_FILE.read_text(encoding="utf-8").splitlines()
+        if pattern.search(line)
+    ]
 
 
 def search_wiki(query: str, section: str = None, tag: str = None) -> list[dict]:
-    """Full-text search over wiki/ articles. Returns ranked results with context."""
+    """Full-text search with optional section and tag filtering."""
     pattern = re.compile(re.escape(query), re.IGNORECASE)
     results = []
 
-    search_paths = []
     if section:
         section_dir = WIKI_DIR / section
-        if section_dir.exists():
-            search_paths = list(section_dir.rglob("*.md"))
-        else:
+        if not section_dir.exists():
             print(f"Section '{section}' not found.", file=sys.stderr)
             return []
+        search_paths = list(section_dir.rglob("*.md"))
     else:
         search_paths = [f for f in WIKI_DIR.rglob("*.md") if not f.name.startswith("_")]
 
@@ -58,45 +55,30 @@ def search_wiki(query: str, section: str = None, tag: str = None) -> list[dict]:
         except Exception:
             continue
 
-        # Tag filter
         if tag:
-            fm_match = re.search(r"^---\n(.*?)\n---", text, re.DOTALL)
-            if fm_match:
-                tags_line = re.search(r"tags:\s*\[([^\]]*)\]", fm_match.group(1))
-                if tags_line:
-                    file_tags = [t.strip() for t in tags_line.group(1).split(",")]
-                    if tag not in file_tags:
-                        continue
-                else:
-                    continue
-            else:
+            fm = parse_frontmatter(text)
+            file_tags = fm.get("tags", [])
+            if not isinstance(file_tags, list) or tag not in file_tags:
                 continue
 
         lines = text.splitlines()
-        match_count = 0
         file_results = []
-
         for i, line in enumerate(lines):
             if pattern.search(line):
-                match_count += 1
                 start = max(0, i - CONTEXT_LINES)
                 end = min(len(lines), i + CONTEXT_LINES + 1)
-                context = lines[start:end]
                 file_results.append({
-                    "line_num": i + 1,
-                    "line": line.strip(),
-                    "context": context,
+                    "line_num": i + 1, "line": line.strip(),
+                    "context": lines[start:end],
                 })
 
         if file_results:
-            rel = md_file.relative_to(WIKI_DIR)
             results.append({
-                "file": str(rel),
-                "match_count": match_count,
-                "matches": file_results[:3],  # top 3 matches per file
+                "file": str(md_file.relative_to(WIKI_DIR)),
+                "match_count": len(file_results),
+                "matches": file_results[:3],
             })
 
-    # Sort by match count descending
     results.sort(key=lambda x: x["match_count"], reverse=True)
     return results
 
@@ -106,15 +88,14 @@ def print_results(results: list[dict], query: str, index_only: bool = False) -> 
         print(f"No results for '{query}'")
         return
 
-    total_matches = sum(r.get("match_count", 1) for r in results)
-    print(f"\n{total_matches} match(es) in {len(results)} file(s) for '{query}'\n")
+    total = sum(r.get("match_count", 1) for r in results)
+    print(f"\n{total} match(es) in {len(results)} file(s) for '{query}'\n")
     print("-" * 60)
 
     for r in results:
         print(f"\n  {r['file']}")
         if "match_count" in r:
             print(f"   {r['match_count']} match(es)")
-
         if index_only:
             print(f"   {r['line']}")
         else:
@@ -129,10 +110,9 @@ def print_results(results: list[dict], query: str, index_only: bool = False) -> 
 def main():
     parser = argparse.ArgumentParser(description="Search the wiki")
     parser.add_argument("query", help="Search query (case-insensitive)")
-    parser.add_argument("--index-only", action="store_true", help="Search only _index.md (fast)")
-    parser.add_argument("--tag", type=str, help="Filter by tag")
-    parser.add_argument("--section", type=str,
-                        help="Search within a specific section (e.g., concepts, entities, events, research)")
+    parser.add_argument("--index-only", action="store_true")
+    parser.add_argument("--tag", type=str)
+    parser.add_argument("--section", type=str)
     args = parser.parse_args()
 
     if args.index_only:

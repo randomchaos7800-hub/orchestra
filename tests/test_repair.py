@@ -8,47 +8,19 @@ All tests use tmp_path fixtures. No real LLM calls.
 
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from lib.common import (
+    parse_frontmatter,
+    extract_wikilink_slugs as extract_wikilinks,
+)
+
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def parse_frontmatter(text: str) -> dict:
-    """Parse YAML frontmatter."""
-    if not text.startswith("---"):
-        return {}
-    end = text.find("---", 3)
-    if end == -1:
-        return {}
-    fm_text = text[3:end].strip()
-    result = {}
-    for line in fm_text.splitlines():
-        if ":" not in line:
-            continue
-        k, _, v = line.partition(":")
-        k = k.strip()
-        v = v.strip()
-        if v.startswith("[") and v.endswith("]"):
-            v = [x.strip().strip('"').strip("'") for x in v[1:-1].split(",") if x.strip()]
-        result[k] = v
-    return result
-
-
-def extract_wikilinks(text: str) -> list[str]:
-    """Extract wikilink targets (stripping type prefix)."""
-    links = []
-    for match in WIKILINK_RE.finditer(text):
-        target = match.group(1)
-        if ":" in target:
-            target = target.split(":", 1)[1]
-        links.append(target)
-    return links
 
 
 def make_article(path: Path, title: str, body: str,
@@ -380,7 +352,7 @@ class TestFrontmatterLinkSync:
         text = (wiki / "concepts" / "alpha.md").read_text(encoding="utf-8")
         fm = parse_frontmatter(text)
         # Should match YYYY-MM-DD
-        assert re.match(r"\d{4}-\d{2}-\d{2}", fm["updated"])
+        assert re.match(r"\d{4}-\d{2}-\d{2}", str(fm["updated"]))
 
 
 # ---------------------------------------------------------------------------

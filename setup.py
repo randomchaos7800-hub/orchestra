@@ -198,10 +198,10 @@ def print_next_steps() -> None:
     print("     and place the JSON files in raw/")
     print()
     print("  2. Run the capture pipeline to classify conversations:")
-    print("     python -m capture.run")
+    print("     python capture/extract.py --input /path/to/export/")
     print()
     print("  3. Run the wiki compiler to generate articles:")
-    print("     python -m tools.compile")
+    print("     python tools/compile.py")
     print()
     print("  4. If using a remote API, set the environment variable:")
     api_key_env = "OPENROUTER_API_KEY"

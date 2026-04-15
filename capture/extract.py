@@ -14,127 +14,27 @@ Usage:
 """
 
 import argparse
-import fcntl
 import json
-import os
 import re
 import sys
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from lib.common import (
+    locked_open, load_config, make_llm_client,
+    parse_llm_json, sanitize_content, git_auto_commit,
+)
 
 # Paths relative to project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 PROJECTS_DIR = PROJECT_ROOT / "capture" / "projects"
 PROCESSED_PATH = PROJECT_ROOT / "capture" / "processed.json"
 
-
-# ---------------------------------------------------------------------------
-# Robust JSON parsing
-# ---------------------------------------------------------------------------
-
-def _parse_llm_json(raw: str) -> dict | None:
-    """Parse LLM output as JSON with fallbacks for common formatting issues.
-
-    1. Strip markdown code fences (```json ... ```)
-    2. Try json.loads directly
-    3. Fall back to regex extraction of first {...} block
-    4. Return None on failure (never crashes)
-    """
-    # Strip markdown code fences
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
-        cleaned = re.sub(r"\n?```$", "", cleaned)
-        cleaned = cleaned.strip()
-
-    # Try direct parse
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-
-    # Regex fallback: extract first {...} block (greedy, handles nested braces)
-    m = re.search(r"\{.*\}", raw, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except json.JSONDecodeError:
-            pass
-
-    print(f"  WARNING: failed to parse LLM JSON response ({len(raw)} chars)", file=sys.stderr)
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Output sanitization
-# ---------------------------------------------------------------------------
-
-def _sanitize_content(text: str) -> str:
-    """Sanitize LLM-generated content before writing to disk.
-
-    - Strips null bytes
-    - Strips control characters (preserves newlines and tabs)
-    - Limits length to 10000 chars
-    """
-    # Strip null bytes
-    text = text.replace("\x00", "")
-    # Strip control characters except \n (0x0a) and \t (0x09)
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
-    # Limit length
-    if len(text) > 10000:
-        text = text[:10000] + "\n[... truncated ...]"
-    return text
-
-
-# ---------------------------------------------------------------------------
-# File locking
-# ---------------------------------------------------------------------------
-
-@contextmanager
-def _locked_open(path, mode="a"):
-    """Open file with exclusive lock to prevent concurrent write corruption."""
-    with open(path, mode, encoding="utf-8") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
-            yield f
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-
-
-# ---------------------------------------------------------------------------
-# File path validation
-# ---------------------------------------------------------------------------
-
+# Project name validation: uppercase letters, digits, hyphens, underscores
 _VALID_PROJECT_RE = re.compile(r"^[A-Z][A-Z0-9_-]*$")
-
-
-def _validate_project_name(name: str) -> bool:
-    """Validate project name to prevent path traversal attacks."""
-    if not _VALID_PROJECT_RE.match(name):
-        return False
-    if "/" in name or "\\" in name or ".." in name or "." in name:
-        return False
-    return True
-
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
-def load_config() -> dict[str, Any]:
-    """Load configuration from config/config.json."""
-    if not CONFIG_PATH.exists():
-        print(f"Error: config not found at {CONFIG_PATH}", file=sys.stderr)
-        print("Copy config/config.json.example or create config/config.json", file=sys.stderr)
-        sys.exit(1)
-
-    with open(CONFIG_PATH, encoding="utf-8") as f:
-        return json.load(f)
 
 
 # ---------------------------------------------------------------------------
@@ -162,13 +62,7 @@ def save_processed(ids: set[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def detect_and_parse(input_path: Path) -> list[dict[str, Any]]:
-    """Auto-detect export format and parse conversations.
-
-    Accepts either a directory (searches for conversations.json inside)
-    or a direct path to a conversations.json file.
-
-    Returns normalized conversation list from the appropriate parser.
-    """
+    """Auto-detect export format and parse conversations."""
     if input_path.is_dir():
         conv_file = input_path / "conversations.json"
         if not conv_file.exists():
@@ -188,78 +82,24 @@ def detect_and_parse(input_path: Path) -> list[dict[str, Any]]:
         sys.exit(1)
 
     sample = raw[0]
-    fmt = _detect_format(sample)
-    print(f"Detected format: {fmt}")
 
-    # Import parsers here to keep them optional at module level
-    if fmt == "claude":
-        from capture.parsers.claude import parse_claude_export
-        return parse_claude_export(conv_file)
-    elif fmt == "chatgpt":
-        from capture.parsers.chatgpt import parse_chatgpt_export
-        return parse_chatgpt_export(conv_file)
-    else:
-        from capture.parsers.generic import parse_generic_export
-        return parse_generic_export(conv_file)
-
-
-def _detect_format(sample: dict) -> str:
-    """Detect the export format from the first conversation object.
-
-    Returns one of: 'claude', 'chatgpt', 'generic'.
-    """
-    # Claude exports have chat_messages and uuid
+    # Claude exports have chat_messages
     if "chat_messages" in sample:
-        return "claude"
+        fmt = "claude"
+        from capture.parsers.claude import parse_claude_export
+        parser = parse_claude_export
+    # ChatGPT exports have mapping + create_time
+    elif "mapping" in sample and "create_time" in sample:
+        fmt = "chatgpt"
+        from capture.parsers.chatgpt import parse_chatgpt_export
+        parser = parse_chatgpt_export
+    else:
+        fmt = "generic"
+        from capture.parsers.generic import parse_generic_export
+        parser = parse_generic_export
 
-    # ChatGPT exports have mapping (message tree) and create_time
-    if "mapping" in sample and "create_time" in sample:
-        return "chatgpt"
-
-    return "generic"
-
-
-# ---------------------------------------------------------------------------
-# LLM client
-# ---------------------------------------------------------------------------
-
-def make_client(config: dict) -> tuple[OpenAI, str]:
-    """Return (client, model) -- local LLM first, fallback second."""
-    llm_cfg = config.get("llm", {})
-    local_url = llm_cfg.get("local_url", "http://127.0.0.1:8081/v1")
-    local_model = llm_cfg.get("local_model", "gemma4")
-    fallback_url = llm_cfg.get("fallback_url", "")
-    fallback_model = llm_cfg.get("fallback_model", "")
-    fallback_key_env = llm_cfg.get("fallback_api_key_env", "")
-
-    # Try local
-    try:
-        client = OpenAI(base_url=local_url, api_key="local")
-        resp = client.chat.completions.create(
-            model=local_model,
-            max_tokens=5,
-            messages=[{"role": "user", "content": "hi"}],
-            timeout=6,
-        )
-        if resp.choices:
-            print(f"LLM: local ({local_model} at {local_url})")
-            return client, local_model
-    except Exception:
-        pass
-
-    # Fallback
-    if fallback_url and fallback_model:
-        api_key = os.environ.get(fallback_key_env, "") if fallback_key_env else ""
-        if api_key:
-            print(f"LLM: fallback ({fallback_model})")
-            return OpenAI(base_url=fallback_url, api_key=api_key), fallback_model
-
-    print(
-        "Error: local LLM unavailable and fallback not configured "
-        f"(need {fallback_key_env} env var)",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+    print(f"Detected format: {fmt}")
+    return parser(conv_file)
 
 
 # ---------------------------------------------------------------------------
@@ -282,10 +122,7 @@ def get_conversation_text(messages: list[dict], max_chars: int = 12000) -> str:
 
 
 def should_skip(conv: dict, config: dict) -> str | None:
-    """Check if a conversation should be skipped.
-
-    Returns a reason string if it should be skipped, None otherwise.
-    """
+    """Check if a conversation should be skipped. Returns reason or None."""
     capture_cfg = config.get("capture", {})
     skip_titles = capture_cfg.get("skip_titles", [])
     min_messages = capture_cfg.get("min_messages", 3)
@@ -301,12 +138,7 @@ def should_skip(conv: dict, config: dict) -> str | None:
     return None
 
 
-def extract_insights(
-    client: OpenAI,
-    model: str,
-    conv: dict,
-    config: dict,
-) -> dict | None:
+def extract_insights(client, model: str, conv: dict, config: dict) -> dict | None:
     """Use LLM to classify and extract insights from a conversation."""
     capture_cfg = config.get("capture", {})
     projects = capture_cfg.get("projects", {})
@@ -336,9 +168,9 @@ Conversation:
 ---
 
 Your task:
-1. Classify each extractable insight into the correct project category. One insight can go to multiple categories if genuinely cross-cutting.
-2. Extract concrete, specific content -- not "they discussed X" but the actual substance of X.
-3. For SPECULATIVE entries: identify what needs to change (tech, API, hardware, capability) for this idea to become buildable. This is the trigger.
+1. Classify each extractable insight into the correct project category.
+2. Extract concrete, specific content -- the actual substance, not "they discussed X".
+3. For SPECULATIVE entries: identify the trigger (what needs to change for this to be buildable).
 4. Skip if purely personal/trivial with no technical, strategic, or intellectual value.
 
 Valid project categories: {json.dumps(project_names)}
@@ -351,22 +183,19 @@ Respond in this exact JSON format:
     {{
       "project": "CATEGORY1",
       "title": "Short descriptive title",
-      "trigger": "only for SPECULATIVE -- what needs to happen for this to be buildable",
-      "content": "The actual insight/decision/idea in clear prose. Be specific. 2-6 sentences."
+      "trigger": "only for SPECULATIVE",
+      "content": "The actual insight in clear prose. 2-6 sentences."
     }}
   ]
-}}
-
-Only include entries worth preserving. Quality over quantity. If nothing is worth capturing, return empty projects array and set skip_reason."""
+}}"""
 
     try:
         response = client.chat.completions.create(
-            model=model,
-            max_tokens=1500,
+            model=model, max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
         raw = (response.choices[0].message.content or "").strip()
-        result = _parse_llm_json(raw)
+        result = parse_llm_json(raw)
         if result is None:
             print(f"  ERROR parsing LLM response for '{title}'")
         return result
@@ -375,38 +204,25 @@ Only include entries worth preserving. Quality over quantity. If nothing is wort
         return None
 
 
-def append_to_project(
-    project: str,
-    date: str,
-    title: str,
-    conv_title: str,
-    content: str,
-    trigger: str = "",
-    conv_id: str = "",
-) -> None:
+def append_to_project(project: str, date: str, title: str, conv_title: str,
+                      content: str, trigger: str = "", conv_id: str = "") -> None:
     """Append an entry to a project markdown file."""
-    # Validate project name to prevent path traversal
-    if not _validate_project_name(project):
+    if not _VALID_PROJECT_RE.match(project):
         print(f"  ERROR: invalid project name '{project}' -- skipping", file=sys.stderr)
         return
 
-    # Sanitize content before writing
-    content = _sanitize_content(content)
-    title = _sanitize_content(title)
+    content = sanitize_content(content)
+    title = sanitize_content(title)
 
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     project_file = PROJECTS_DIR / f"{project}.md"
 
-    trigger_line = ""
-    if trigger and project == "SPECULATIVE":
-        trigger_line = f"**Trigger:** {trigger}\n"
-
+    trigger_line = f"**Trigger:** {trigger}\n" if trigger and project == "SPECULATIVE" else ""
     captured_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     meta_line = f"**Source:** {conv_title} | **ID:** {conv_id} | **Captured:** {captured_ts}"
-
     entry = f"\n## {date} - {title}\n{meta_line}\n{trigger_line}\n{content}\n\n---\n"
 
-    with _locked_open(project_file, "a") as f:
+    with locked_open(project_file, "a") as f:
         f.write(entry)
 
 
@@ -418,36 +234,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Orchestra capture -- extract insights from AI conversation exports"
     )
-    parser.add_argument(
-        "--input",
-        required=True,
-        help="Path to export directory (containing conversations.json) or direct path to JSON file",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Classify and print results without writing project files",
-    )
-    parser.add_argument(
-        "--config",
-        default=None,
-        help="Path to config.json (default: config/config.json in project root)",
-    )
-    parser.add_argument(
-        "--git",
-        action="store_true",
-        help="Auto-commit changes to git after capture",
-    )
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--git", action="store_true")
     args = parser.parse_args()
 
-    # Load config
-    global CONFIG_PATH
-    if args.config:
-        CONFIG_PATH = Path(args.config).resolve()
+    config_path = Path(args.config).resolve() if args.config else None
+    config = load_config(config_path)
 
-    config = load_config()
-
-    # Parse input
     input_path = Path(args.input).resolve()
     print(f"Input: {input_path}")
 
@@ -455,7 +250,6 @@ def main() -> None:
     conversations.sort(key=lambda c: c.get("updated_at", ""))
     print(f"Loaded {len(conversations)} conversations")
 
-    # Dedup
     processed_ids = load_processed()
     capture_cfg = config.get("capture", {})
     project_names = list(capture_cfg.get("projects", {}).keys())
@@ -463,24 +257,15 @@ def main() -> None:
 
     if args.dry_run:
         print("[DRY RUN] No files will be written.\n")
-    else:
-        # Connect to LLM
-        pass
 
-    client, model = make_client(config)
+    client, model, _ = make_llm_client(config)
     print("Processing...\n")
 
     stats = {
-        "total": len(conversations),
-        "processed": 0,
-        "skipped_filter": 0,
-        "skipped_dedup": 0,
-        "skipped_llm": 0,
-        "entries_written": 0,
-        "errors": 0,
+        "total": len(conversations), "processed": 0, "skipped_filter": 0,
+        "skipped_dedup": 0, "skipped_llm": 0, "entries_written": 0, "errors": 0,
     }
-
-    newly_processed = set()
+    newly_processed: set[str] = set()
 
     for i, conv in enumerate(conversations):
         title = conv.get("title", "(unnamed)")
@@ -488,13 +273,11 @@ def main() -> None:
         conv_id = conv.get("id", "")
         msg_count = len(conv.get("messages", []))
 
-        # Dedup check
         if conv_id and conv_id in processed_ids:
             print(f"[{i+1:03d}] DEDUP {title[:60]}")
             stats["skipped_dedup"] += 1
             continue
 
-        # Filter check
         skip_reason = should_skip(conv, config)
         if skip_reason:
             print(f"[{i+1:03d}] SKIP  {title[:60]} ({skip_reason})")
@@ -504,7 +287,6 @@ def main() -> None:
             continue
 
         print(f"[{i+1:03d}] ...   {title[:60]} ({msg_count} msgs)")
-
         result = extract_insights(client, model, conv, config)
         stats["processed"] += 1
 
@@ -516,22 +298,19 @@ def main() -> None:
 
         projects = result.get("projects", [])
         if not projects:
-            reason = result.get("skip_reason", "no relevant content")
-            print(f"       -> skip: {reason}")
+            print(f"       -> skip: {result.get('skip_reason', 'no relevant content')}")
             stats["skipped_llm"] += 1
             if conv_id:
                 newly_processed.add(conv_id)
             continue
 
-        entries = result.get("entries", [])
-        for entry in entries:
+        for entry in result.get("entries", []):
             proj = entry.get("project", default_project)
             if proj not in project_names:
                 proj = default_project
             entry_title = entry.get("title", title)
             content = entry.get("content", "")
             trigger = entry.get("trigger", "")
-
             if not content:
                 continue
 
@@ -549,13 +328,11 @@ def main() -> None:
         if conv_id:
             newly_processed.add(conv_id)
 
-    # Save dedup state (unless dry run)
     if not args.dry_run and newly_processed:
         all_processed = processed_ids | newly_processed
         save_processed(all_processed)
         print(f"\nDedup: {len(newly_processed)} new IDs tracked ({len(all_processed)} total)")
 
-    # Summary
     print(f"\n--- Summary ---")
     print(f"Total conversations: {stats['total']}")
     print(f"Sent to LLM:        {stats['processed']}")
@@ -567,20 +344,12 @@ def main() -> None:
     if args.dry_run:
         print("[DRY RUN] No files were modified.")
 
-    # Git auto-commit
     if args.git and not args.dry_run and stats["entries_written"] > 0:
-        import subprocess
-        try:
-            subprocess.run(["git", "add", "projects/", "capture/processed.json"],
-                          cwd=str(PROJECT_ROOT), capture_output=True, check=True)
-            msg = f"capture: {stats['entries_written']} entries from {stats['processed']} conversations"
-            subprocess.run(["git", "commit", "-m", msg],
-                          cwd=str(PROJECT_ROOT), capture_output=True, check=True)
+        msg = f"capture: {stats['entries_written']} entries from {stats['processed']} conversations"
+        if git_auto_commit(["projects/", "capture/processed.json"], msg, PROJECT_ROOT):
             print(f"Git: committed ({msg})")
-        except subprocess.CalledProcessError:
+        else:
             print("Git: nothing to commit or git not available")
-        except FileNotFoundError:
-            print("Git: git command not found")
 
 
 if __name__ == "__main__":

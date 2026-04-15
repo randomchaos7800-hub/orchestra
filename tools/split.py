@@ -18,7 +18,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-KB_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from lib.common import KB_ROOT
+
 PROJECTS_DIR = KB_ROOT / "projects"
 DEFAULT_THRESHOLD_KB = 512
 
