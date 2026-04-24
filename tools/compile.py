@@ -344,10 +344,17 @@ Use [[type:slug]] or [[slug]] syntax for cross-references."""
             metadata["links"] = links
 
         existing_fm = parse_frontmatter(article_path.read_text(encoding="utf-8"))
-        if core_concepts and not existing_fm.get("expanded_terms"):
-            expanded = _expand_concepts(client, model, core_concepts)
-            if expanded:
-                metadata["expanded_terms"] = expanded
+        if core_concepts:
+            metadata["core_concepts"] = core_concepts
+            existing_concepts = existing_fm.get("core_concepts", [])
+            needs_expansion = (
+                not existing_fm.get("expanded_terms")
+                or sorted(existing_concepts) != sorted(core_concepts)
+            )
+            if needs_expansion:
+                expanded = _expand_concepts(client, model, core_concepts)
+                if expanded:
+                    metadata["expanded_terms"] = expanded
 
         inject_metadata(article_path, metadata)
 

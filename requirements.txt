@@ -1,3 +1,7 @@
 openai>=2.0
 httpx>=0.28
 pyyaml>=6.0
+
+# Optional: hybrid vector search (tools/search_hybrid.py, tools/suggest_links.py)
+# chromadb>=0.4
+# sentence-transformers>=2.2

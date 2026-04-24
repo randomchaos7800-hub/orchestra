@@ -113,24 +113,44 @@ Why 9 PM: if you're dropping notes throughout the day, or have agents generating
 
 ## Search
 
-Three search tools included:
+Four search tools included, at different complexity levels:
 
-**`query.py`** — structured queries against the wiki:
+**`tools/search.py`** — full-text regex search, no extra dependencies:
 ```bash
-python wiki/tools/query.py "transformer attention mechanisms"
+python tools/search.py "knowledge graph"
+python tools/search.py --tag agents "memory"
+python tools/search.py --section concepts "attention"
 ```
 
-**`search.py`** — full-text search across all wiki articles:
+**`tools/search_hybrid.py`** — hybrid BM25 + vector search with Reciprocal Rank Fusion. Finds semantically similar articles that don't share exact keywords. Incremental ChromaDB index, updates only changed files on each run.
 ```bash
-python wiki/tools/search.py "knowledge graph"
+python tools/search_hybrid.py "transformer attention"
+python tools/search_hybrid.py --reindex   # force full reindex
+python tools/search_hybrid.py --stats     # show index state
 ```
 
-**`healthcheck.py`** — wiki health report:
+**`tools/suggest_links.py`** — finds articles that should be linked but aren't, by querying stored embeddings for similarity above a threshold. Writes `wiki/meta/suggestions.md`.
 ```bash
-python wiki/tools/healthcheck.py
+python tools/suggest_links.py
+python tools/suggest_links.py --threshold 0.7   # stricter
+python tools/suggest_links.py --dry-run         # preview only
 ```
 
-For most uses, grep and ripgrep work fine. The search tools exist for convenience, not necessity. The wiki is markdown — any text search tool works.
+**`tools/query.py`** — natural language Q&A against the wiki using LLM:
+```bash
+python tools/query.py "what do we know about transformer attention?"
+python tools/query.py --slides "overview of agentic architectures"
+```
+
+For most uses, grep and ripgrep work fine. `search.py` is the zero-dependency option. `search_hybrid.py` and `suggest_links.py` are worth the extra setup once the wiki is large enough that you're missing connections.
+
+### Search dependency tradeoff
+
+`search_hybrid.py` requires `chromadb` and `sentence-transformers`. The problem: `sentence-transformers` depends on PyTorch, which is a 1-2GB install. That contradicts the "boring technology, no managed services" premise.
+
+The known lighter alternative is [`fastembed`](https://github.com/qdrant/fastembed) (by Qdrant), which uses ONNX Runtime instead of PyTorch. Total install is ~100MB instead of ~2GB, and ChromaDB supports it natively via `FastEmbedEmbeddingFunction`. We haven't validated the switch yet — changing the embedding function invalidates any existing index and requires a full reindex, and we want to verify model quality is comparable before making it the default. The direction is clear, the timeline isn't. Once validated, the change is two lines in `_get_collection()` and a `requirements.txt` update.
+
+If the PyTorch weight is a problem today, `tools/search.py` with `--tag` and `--section` filtering covers most use cases.
 
 ## Raw Data Preservation
 
