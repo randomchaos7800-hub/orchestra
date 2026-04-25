@@ -24,7 +24,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.common import (
-    locked_open, load_config, make_llm_client,
+    locked_open, load_config, make_llm_client, llm_call,
     parse_llm_json, sanitize_content, git_auto_commit,
 )
 
@@ -154,9 +154,8 @@ def extract_insights(client, model: str, conv: dict, config: dict) -> dict | Non
     project_list = "\n".join([f"- {p}: {d}" for p, d in projects.items()])
     project_names = list(projects.keys())
 
-    prompt = f"""You are extracting knowledge from an AI conversation for a structured knowledge vault.
-
-Conversation title: {title}
+    system = "You are extracting knowledge from an AI conversation for a structured knowledge vault."
+    prompt = f"""Conversation title: {title}
 Date: {date}
 
 Project categories:
@@ -190,11 +189,7 @@ Respond in this exact JSON format:
 }}"""
 
     try:
-        response = client.chat.completions.create(
-            model=model, max_tokens=1500,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = (response.choices[0].message.content or "").strip()
+        raw = llm_call(client, model, system, prompt, max_tokens=1500)
         result = parse_llm_json(raw)
         if result is None:
             print(f"  ERROR parsing LLM response for '{title}'")

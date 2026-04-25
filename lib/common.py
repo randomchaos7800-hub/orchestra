@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -171,18 +172,27 @@ def make_llm_client(config: dict | None = None) -> tuple:
 
 
 def llm_call(client, model: str, system: str, user: str, max_tokens: int = 6000) -> str:
-    """Single LLM call. Returns response text.
+    """LLM call with temperature=0.0 and 3-attempt exponential-backoff retry.
 
     Client should be an OpenAI client instance from make_llm_client().
     """
-    response = client.chat.completions.create(
-        model=model, max_tokens=max_tokens,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    )
-    return (response.choices[0].message.content or "").strip()
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model=model, max_tokens=max_tokens,
+                temperature=0.0,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            )
+            return (response.choices[0].message.content or "").strip()
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    raise RuntimeError(f"LLM call failed after 3 attempts: {last_exc}") from last_exc
 
 
 # ---------------------------------------------------------------------------
