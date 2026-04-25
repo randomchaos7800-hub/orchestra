@@ -16,6 +16,14 @@ from pathlib import Path
 
 import yaml
 
+# Load .env if present — lets users set OPENROUTER_API_KEY in a .env file
+# instead of exporting it in their shell. Falls back silently if not installed.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # ---------------------------------------------------------------------------
 # Path constants (all relative to project root)
 # ---------------------------------------------------------------------------
@@ -171,11 +179,16 @@ def make_llm_client(config: dict | None = None) -> tuple:
     sys.exit(1)
 
 
-def llm_call(client, model: str, system: str, user: str, max_tokens: int = 6000) -> str:
+def llm_call(client, model: str, system: str, user: str, max_tokens: int = 6000,
+             request_delay: float = 0.0) -> str:
     """LLM call with temperature=0.0 and 3-attempt exponential-backoff retry.
 
-    Client should be an OpenAI client instance from make_llm_client().
+    Args:
+        client: OpenAI client instance from make_llm_client().
+        request_delay: seconds to sleep after a successful call (rate limiting).
+                       Can also be set via ORCHESTRA_REQUEST_DELAY env var.
     """
+    delay = request_delay or float(os.environ.get("ORCHESTRA_REQUEST_DELAY", "0"))
     last_exc: Exception | None = None
     for attempt in range(3):
         try:
@@ -187,7 +200,10 @@ def llm_call(client, model: str, system: str, user: str, max_tokens: int = 6000)
                     {"role": "user", "content": user},
                 ],
             )
-            return (response.choices[0].message.content or "").strip()
+            text = (response.choices[0].message.content or "").strip()
+            if delay > 0:
+                time.sleep(delay)
+            return text
         except Exception as exc:
             last_exc = exc
             if attempt < 2:

@@ -3,6 +3,7 @@
 import json
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -11,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.common import (
     parse_frontmatter, split_frontmatter, write_article,
     extract_typed_links, extract_wikilink_slugs,
-    parse_llm_json, sanitize_content,
+    parse_llm_json, sanitize_content, llm_call,
+    inject_reciprocal_backlinks, load_config,
     LINK_TYPES, INVERSE_LINK_TYPE,
 )
 
@@ -186,3 +188,144 @@ class TestConstants:
         valid_inverses = {"referenced_by", "related"}
         for lt, inv in INVERSE_LINK_TYPE.items():
             assert inv in valid_inverses, f"Invalid inverse '{inv}' for '{lt}'"
+
+
+class TestLlmCall:
+    def _mock_client(self, content: str):
+        client = MagicMock()
+        msg = MagicMock()
+        msg.content = content
+        choice = MagicMock()
+        choice.message = msg
+        client.chat.completions.create.return_value = MagicMock(choices=[choice])
+        return client
+
+    def test_returns_response_text(self):
+        client = self._mock_client("hello world")
+        result = llm_call(client, "model", "sys", "user")
+        assert result == "hello world"
+
+    def test_strips_whitespace(self):
+        client = self._mock_client("  trimmed  ")
+        assert llm_call(client, "model", "sys", "user") == "trimmed"
+
+    def test_none_content_returns_empty(self):
+        client = self._mock_client(None)
+        assert llm_call(client, "model", "sys", "user") == ""
+
+    def test_passes_temperature_zero(self):
+        client = self._mock_client("ok")
+        llm_call(client, "mymodel", "sys", "user", max_tokens=100)
+        call_kwargs = client.chat.completions.create.call_args[1]
+        assert call_kwargs["temperature"] == 0.0
+
+    def test_passes_correct_model(self):
+        client = self._mock_client("ok")
+        llm_call(client, "specific-model", "sys", "user")
+        call_kwargs = client.chat.completions.create.call_args[1]
+        assert call_kwargs["model"] == "specific-model"
+
+    def test_retry_on_failure_then_success(self):
+        client = MagicMock()
+        msg = MagicMock()
+        msg.content = "success"
+        choice = MagicMock()
+        choice.message = msg
+        # Fail twice, succeed on third attempt
+        client.chat.completions.create.side_effect = [
+            Exception("timeout"),
+            Exception("timeout"),
+            MagicMock(choices=[choice]),
+        ]
+        with patch("lib.common.time.sleep"):
+            result = llm_call(client, "model", "sys", "user")
+        assert result == "success"
+        assert client.chat.completions.create.call_count == 3
+
+    def test_raises_after_three_failures(self):
+        client = MagicMock()
+        client.chat.completions.create.side_effect = Exception("always fails")
+        with patch("lib.common.time.sleep"):
+            with pytest.raises(RuntimeError, match="3 attempts"):
+                llm_call(client, "model", "sys", "user")
+        assert client.chat.completions.create.call_count == 3
+
+    def test_sleeps_between_retries(self):
+        client = MagicMock()
+        msg = MagicMock()
+        msg.content = "ok"
+        choice = MagicMock()
+        choice.message = msg
+        client.chat.completions.create.side_effect = [
+            Exception("fail"),
+            MagicMock(choices=[choice]),
+        ]
+        with patch("lib.common.time.sleep") as mock_sleep:
+            llm_call(client, "model", "sys", "user")
+        mock_sleep.assert_called_once_with(1)  # 2**0 = 1s after first failure
+
+    def test_request_delay_applied(self):
+        client = self._mock_client("ok")
+        with patch("lib.common.time.sleep") as mock_sleep:
+            llm_call(client, "model", "sys", "user", request_delay=0.5)
+        mock_sleep.assert_called_once_with(0.5)
+
+
+class TestLoadConfig:
+    def test_missing_config_exits(self, tmp_path):
+        with pytest.raises(SystemExit):
+            load_config(tmp_path / "nonexistent.json")
+
+    def test_valid_config_loaded(self, tmp_path):
+        cfg = {"llm": {"local_url": "http://localhost:8081/v1"}}
+        config_file = tmp_path / "config.json"
+        config_file.write_text(json.dumps(cfg), encoding="utf-8")
+        result = load_config(config_file)
+        assert result["llm"]["local_url"] == "http://localhost:8081/v1"
+
+
+class TestInjectReciprocalBacklinks:
+    def test_backlink_injected(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        concepts = wiki / "concepts"
+        concepts.mkdir(parents=True)
+
+        # Target article exists
+        target = concepts / "target-article.md"
+        target.write_text(
+            "---\ntitle: Target\nlinks: []\n---\n\nBody.",
+            encoding="utf-8",
+        )
+
+        links = [{"target": "target-article", "type": "references"}]
+        inject_reciprocal_backlinks("source-article", links, wiki_dir=wiki)
+
+        from lib.common import parse_frontmatter
+        fm = parse_frontmatter(target.read_text(encoding="utf-8"))
+        assert any(l["target"] == "source-article" for l in fm.get("links", []))
+
+    def test_no_duplicate_backlinks(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        concepts = wiki / "concepts"
+        concepts.mkdir(parents=True)
+
+        target = concepts / "target.md"
+        target.write_text(
+            "---\ntitle: T\nlinks:\n- target: source\n  type: referenced_by\n---\n\nBody.",
+            encoding="utf-8",
+        )
+
+        links = [{"target": "target", "type": "references"}]
+        inject_reciprocal_backlinks("source", links, wiki_dir=wiki)
+
+        from lib.common import parse_frontmatter
+        fm = parse_frontmatter(target.read_text(encoding="utf-8"))
+        source_links = [l for l in fm.get("links", []) if l.get("target") == "source"]
+        assert len(source_links) == 1
+
+    def test_missing_target_is_skipped(self, tmp_path):
+        wiki = tmp_path / "wiki"
+        wiki.mkdir()
+        # No articles on disk — should not raise
+        links = [{"target": "ghost-article", "type": "references"}]
+        inject_reciprocal_backlinks("source", links, wiki_dir=wiki)  # no exception

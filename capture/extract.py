@@ -341,7 +341,7 @@ def main() -> None:
 
     if args.git and not args.dry_run and stats["entries_written"] > 0:
         msg = f"capture: {stats['entries_written']} entries from {stats['processed']} conversations"
-        if git_auto_commit(["projects/", "capture/processed.json"], msg, PROJECT_ROOT):
+        if git_auto_commit(["capture/projects/", "capture/processed.json"], msg, PROJECT_ROOT):
             print(f"Git: committed ({msg})")
         else:
             print("Git: nothing to commit or git not available")

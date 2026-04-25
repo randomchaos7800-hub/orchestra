@@ -30,7 +30,7 @@ def create_directories() -> None:
         "wiki/events",
         "wiki/research",
         "wiki/meta",
-        "projects",
+        "capture/projects",
         "config",
     ]
     for d in dirs:
@@ -138,6 +138,20 @@ def create_gitignore() -> None:
     print("  [ok] .gitignore created")
 
 
+def copy_env_example() -> None:
+    """Copy .env.example to .env if .env doesn't exist."""
+    example = BASE_DIR / ".env.example"
+    target = BASE_DIR / ".env"
+    if target.exists():
+        print("  [skip] .env already exists")
+        return
+    if not example.exists():
+        print("  [skip] .env.example not found")
+        return
+    shutil.copy(example, target)
+    print("  [ok] .env created from .env.example — add your API key")
+
+
 def prompt_llm_config() -> None:
     """Prompt the user for LLM endpoint configuration and update config.json."""
     config_path = BASE_DIR / "config" / "config.json"
@@ -211,7 +225,8 @@ def print_next_steps() -> None:
             api_key_env = cfg.get("llm", {}).get("fallback_api_key_env", api_key_env)
     except Exception:
         pass
-    print(f"     export {api_key_env}=your-key-here")
+    print(f"     Add {api_key_env}=your-key-here to your .env file")
+    print(f"     (or export {api_key_env}=your-key-here in your shell)")
     print()
     print("  5. Run tests to verify everything:")
     print("     pytest tests/")
@@ -233,6 +248,9 @@ def main() -> None:
 
     print("\nChecking .gitignore...")
     create_gitignore()
+
+    print("\nSetting up .env...")
+    copy_env_example()
 
     # Only prompt interactively if stdin is a terminal
     if sys.stdin.isatty():
