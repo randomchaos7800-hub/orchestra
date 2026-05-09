@@ -1,6 +1,6 @@
 {
   "llm": {
-    "local_url": "http://127.0.0.1:8081/v1",
+    "local_url": "http://100.120.50.35:8010/v1",
     "local_model": "gemma4",
     "local_max_tokens": 6000,
     "fallback_url": "https://openrouter.ai/api/v1",

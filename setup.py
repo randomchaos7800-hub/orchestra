@@ -55,7 +55,7 @@ def copy_example_config() -> bool:
         print("  [warn] config/config.example.json not found, creating default config")
         config = {
             "llm": {
-                "local_url": "http://127.0.0.1:8081/v1",
+                "local_url": "http://100.120.50.35:8010/v1",
                 "local_model": "gemma4",
                 "local_max_tokens": 6000,
                 "fallback_url": "https://openrouter.ai/api/v1",
@@ -168,7 +168,7 @@ def prompt_llm_config() -> None:
     print("is tried first and the remote API is used as fallback.\n")
 
     # Local endpoint
-    current_local = config.get("llm", {}).get("local_url", "http://127.0.0.1:8081/v1")
+    current_local = config.get("llm", {}).get("local_url", "http://100.120.50.35:8010/v1")
     local_url = input(f"Local LLM URL [{current_local}]: ").strip()
     if local_url:
         config.setdefault("llm", {})["local_url"] = local_url
