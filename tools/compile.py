@@ -279,12 +279,20 @@ Bare [[slug]] is also valid and defaults to 'references'."""
         if not path_str or not title:
             continue
 
+        # Reject LLM-generated paths that escape the wiki directory
+        resolved_article = (WIKI_DIR / path_str).resolve()
+        try:
+            resolved_article.relative_to(WIKI_DIR.resolve())
+        except ValueError:
+            logger.error(f"  SKIP: LLM returned unsafe path: {path_str!r}")
+            continue
+
         if dry_run:
             print(f"  [DRY RUN] Would {action}: {path_str} -- {summary}")
             touched.append(path_str)
             continue
 
-        article_path = WIKI_DIR / path_str
+        article_path = resolved_article
         existing_text = ""
         if article_path.exists() and action == "update":
             try:

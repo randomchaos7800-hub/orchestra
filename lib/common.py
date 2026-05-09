@@ -113,7 +113,13 @@ def load_config(config_path: Path | None = None) -> dict:
         print("Run setup.py or copy config/config.example.json to config/config.json", file=sys.stderr)
         sys.exit(1)
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        config = json.load(f)
+    missing = [k for k in ("llm", "capture") if k not in config]
+    if missing:
+        print(f"Error: config missing required section(s): {', '.join(missing)}", file=sys.stderr)
+        print(f"  Check {path} against config/config.example.json", file=sys.stderr)
+        sys.exit(1)
+    return config
 
 
 def load_llm_config(config_path: Path | None = None) -> dict:
@@ -138,7 +144,7 @@ def make_llm_client(config: dict | None = None) -> tuple:
     else:
         llm_cfg = config
 
-    local_url = llm_cfg.get("local_url", "http://127.0.0.1:8081/v1")
+    local_url = llm_cfg.get("local_url", "http://100.120.50.35:8010/v1")
     local_model = llm_cfg.get("local_model", "gemma4")
     max_tokens = llm_cfg.get("local_max_tokens", 6000)
 

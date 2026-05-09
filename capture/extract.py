@@ -146,7 +146,7 @@ def extract_insights(client, model: str, conv: dict, config: dict) -> dict | Non
 
     title = conv.get("title", "(unnamed)")
     date = conv.get("updated_at", "")[:10]
-    text = get_conversation_text(conv.get("messages", []), max_chars)
+    text = sanitize_content(get_conversation_text(conv.get("messages", []), max_chars))
 
     if not text or len(text) < 100:
         return None
