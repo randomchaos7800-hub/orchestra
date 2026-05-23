@@ -14,6 +14,23 @@ from pathlib import Path
 from typing import Any
 
 
+def _conversation_fingerprint(title: str, updated_at: str, messages: list[dict[str, str]]) -> str:
+    """Build a stable content fingerprint for conversations without IDs."""
+    payload = {
+        "title": title,
+        "updated_at": updated_at,
+        "messages": [
+            {
+                "role": (msg.get("role", "") or "").strip(),
+                "content": (msg.get("content", "") or "").strip(),
+            }
+            for msg in messages
+        ],
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def parse_generic_export(conversations_json_path: str | Path) -> list[dict[str, Any]]:
     """Parse a generic conversations JSON file into a normalized format.
 
@@ -41,14 +58,8 @@ def parse_generic_export(conversations_json_path: str | Path) -> list[dict[str, 
         raise ValueError(f"Expected a JSON array in {path}, got {type(raw).__name__}")
 
     conversations = []
-    for i, conv in enumerate(raw):
+    for conv in raw:
         title = (conv.get("title", "") or "").strip() or "(unnamed)"
-
-        # Generate a stable ID from title + index if not provided
-        conv_id = conv.get("id", "")
-        if not conv_id:
-            conv_id = hashlib.sha256(f"{title}-{i}".encode()).hexdigest()[:16]
-
         updated_at = conv.get("updated_at", "")
 
         messages = []
@@ -57,6 +68,10 @@ def parse_generic_export(conversations_json_path: str | Path) -> list[dict[str, 
             content = msg.get("content", "")
             if role and content:
                 messages.append({"role": role, "content": content.strip()})
+
+        conv_id = (conv.get("id", "") or "").strip()
+        if not conv_id:
+            conv_id = _conversation_fingerprint(title, updated_at, messages)
 
         conversations.append({
             "id": conv_id,

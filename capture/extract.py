@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -51,6 +52,27 @@ def load_processed() -> set[str]:
 def save_processed(ids: set[str]) -> None:
     """Persist the set of processed conversation IDs."""
     write_json_file(PROCESSED_PATH, {"processed_ids": sorted(ids)})
+
+
+def conversation_dedup_key(conv: dict[str, Any]) -> str:
+    """Return a stable dedup key from ID or normalized conversation content."""
+    conv_id = (conv.get("id", "") or "").strip()
+    if conv_id:
+        return conv_id
+
+    payload = {
+        "title": (conv.get("title", "") or "").strip(),
+        "updated_at": (conv.get("updated_at", "") or "").strip(),
+        "messages": [
+            {
+                "role": (msg.get("role", "") or "").strip(),
+                "content": (msg.get("content", "") or "").strip(),
+            }
+            for msg in conv.get("messages", [])
+        ],
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +284,10 @@ def main() -> None:
         title = conv.get("title", "(unnamed)")
         date = conv.get("updated_at", "")[:10]
         conv_id = conv.get("id", "")
+        dedup_key = conversation_dedup_key(conv)
         msg_count = len(conv.get("messages", []))
 
-        if conv_id and conv_id in processed_ids:
+        if dedup_key in processed_ids:
             print(f"[{i+1:03d}] DEDUP {title[:60]}")
             stats["skipped_dedup"] += 1
             continue
@@ -273,8 +296,7 @@ def main() -> None:
         if skip_reason:
             print(f"[{i+1:03d}] SKIP  {title[:60]} ({skip_reason})")
             stats["skipped_filter"] += 1
-            if conv_id:
-                newly_processed.add(conv_id)
+            newly_processed.add(dedup_key)
             continue
 
         print(f"[{i+1:03d}] ...   {title[:60]} ({msg_count} msgs)")
@@ -291,8 +313,7 @@ def main() -> None:
         if not projects:
             print(f"       -> skip: {result.get('skip_reason', 'no relevant content')}")
             stats["skipped_llm"] += 1
-            if conv_id:
-                newly_processed.add(conv_id)
+            newly_processed.add(dedup_key)
             continue
 
         for entry in result.get("entries", []):
@@ -316,8 +337,7 @@ def main() -> None:
 
             stats["entries_written"] += 1
 
-        if conv_id:
-            newly_processed.add(conv_id)
+        newly_processed.add(dedup_key)
 
     if not args.dry_run and newly_processed:
         all_processed = processed_ids | newly_processed

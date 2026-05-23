@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from capture.extract import conversation_dedup_key, load_processed, save_processed
 from capture.parsers.claude import parse_claude_export
 from capture.parsers.chatgpt import parse_chatgpt_export
 from capture.parsers.generic import parse_generic_export
@@ -299,6 +300,29 @@ class TestGenericParser:
         assert result[0]["id"] != ""
         assert len(result[0]["id"]) == 16  # sha256 hex truncated
 
+    def test_generated_id_is_stable_across_array_order(self, tmp_path: Path):
+        conv_a = {
+            "title": "No ID A",
+            "updated_at": "2026-04-01",
+            "messages": [{"role": "user", "content": "alpha"}],
+        }
+        conv_b = {
+            "title": "No ID B",
+            "updated_at": "2026-04-02",
+            "messages": [{"role": "assistant", "content": "beta"}],
+        }
+
+        export_file = tmp_path / "conversations.json"
+        export_file.write_text(json.dumps([conv_a, conv_b]), encoding="utf-8")
+        first_pass = parse_generic_export(export_file)
+
+        export_file.write_text(json.dumps([conv_b, conv_a]), encoding="utf-8")
+        second_pass = parse_generic_export(export_file)
+
+        first_ids = {conv["title"]: conv["id"] for conv in first_pass}
+        second_ids = {conv["title"]: conv["id"] for conv in second_pass}
+        assert first_ids == second_ids
+
     def test_missing_file(self, tmp_path: Path):
         with pytest.raises(FileNotFoundError):
             parse_generic_export(tmp_path / "nonexistent.json")
@@ -425,70 +449,59 @@ class TestSkipLogic:
 # ---------------------------------------------------------------------------
 
 class TestDedupTracking:
-    def test_new_conversation_not_in_processed(self, tmp_path: Path):
+    def test_load_processed_defaults_to_empty_set(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         processed_file = tmp_path / "processed.json"
-        processed_file.write_text(json.dumps({"processed": {}}), encoding="utf-8")
+        monkeypatch.setattr("capture.extract.PROCESSED_PATH", processed_file)
+        assert load_processed() == set()
 
-        processed = json.loads(processed_file.read_text(encoding="utf-8"))
-        conv_id = "conv-new"
-        assert conv_id not in processed["processed"]
-
-    def test_mark_conversation_processed(self, tmp_path: Path):
+    def test_save_and_load_processed_keys(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         processed_file = tmp_path / "processed.json"
-        processed_file.write_text(json.dumps({"processed": {}}), encoding="utf-8")
+        monkeypatch.setattr("capture.extract.PROCESSED_PATH", processed_file)
 
-        processed = json.loads(processed_file.read_text(encoding="utf-8"))
-        conv_id = "conv-123"
-        processed["processed"][conv_id] = {
-            "processed_at": "2026-04-09T12:00:00Z",
-            "project": "RESEARCH",
+        save_processed({"conv-123", "conv-456"})
+        assert load_processed() == {"conv-123", "conv-456"}
+
+        stored = json.loads(processed_file.read_text(encoding="utf-8"))
+        assert stored == {"processed_ids": ["conv-123", "conv-456"]}
+
+    def test_content_fingerprint_is_used_without_id(self):
+        conv = {
+            "title": "Architecture review",
+            "updated_at": "2026-04-09",
+            "messages": [
+                {"role": "user", "content": "Plan the memory layout."},
+                {"role": "assistant", "content": "Use a three-tier model."},
+            ],
         }
-        processed_file.write_text(json.dumps(processed, indent=2), encoding="utf-8")
+        assert len(conversation_dedup_key(conv)) == 16
 
-        reloaded = json.loads(processed_file.read_text(encoding="utf-8"))
-        assert conv_id in reloaded["processed"]
-        assert reloaded["processed"][conv_id]["project"] == "RESEARCH"
-
-    def test_skip_already_processed(self, tmp_path: Path):
-        processed_file = tmp_path / "processed.json"
-        processed = {
-            "processed": {
-                "conv-old": {"processed_at": "2026-04-01", "project": "GENERAL"},
-            }
+    def test_content_fingerprint_is_stable_for_same_conversation(self):
+        conv_a = {
+            "title": "Architecture review",
+            "updated_at": "2026-04-09",
+            "messages": [
+                {"role": "user", "content": "Plan the memory layout."},
+                {"role": "assistant", "content": "Use a three-tier model."},
+            ],
         }
-        processed_file.write_text(json.dumps(processed), encoding="utf-8")
-
-        data = json.loads(processed_file.read_text(encoding="utf-8"))
-        conversations = [
-            {"id": "conv-old", "title": "Old", "messages": []},
-            {"id": "conv-new", "title": "New", "messages": []},
-        ]
-        unprocessed = [c for c in conversations if c["id"] not in data["processed"]]
-        assert len(unprocessed) == 1
-        assert unprocessed[0]["id"] == "conv-new"
-
-    def test_processed_json_structure(self, tmp_path: Path):
-        processed_file = tmp_path / "processed.json"
-        processed = {
-            "processed": {
-                "conv-1": {
-                    "processed_at": "2026-04-01T00:00:00Z",
-                    "project": "PROJECTS",
-                },
-                "conv-2": {
-                    "processed_at": "2026-04-02T00:00:00Z",
-                    "project": "RESEARCH",
-                },
-            }
+        conv_b = {
+            "title": "Architecture review",
+            "updated_at": "2026-04-09",
+            "messages": [
+                {"role": "user", "content": "Plan the memory layout."},
+                {"role": "assistant", "content": "Use a three-tier model."},
+            ],
         }
-        processed_file.write_text(json.dumps(processed), encoding="utf-8")
+        assert conversation_dedup_key(conv_a) == conversation_dedup_key(conv_b)
 
-        data = json.loads(processed_file.read_text(encoding="utf-8"))
-        assert "processed" in data
-        assert isinstance(data["processed"], dict)
-        for entry in data["processed"].values():
-            assert "processed_at" in entry
-            assert "project" in entry
+    def test_existing_id_still_wins_for_dedup(self):
+        conv = {
+            "id": "conv-stable",
+            "title": "Architecture review",
+            "updated_at": "2026-04-09",
+            "messages": [{"role": "user", "content": "hello"}],
+        }
+        assert conversation_dedup_key(conv) == "conv-stable"
 
 
 # ---------------------------------------------------------------------------
