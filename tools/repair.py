@@ -32,7 +32,7 @@ from lib.common import (
     LINK_TYPES, INVERSE_LINK_TYPE,
     _TYPED_LINK_RE, _BARE_LINK_RE,
     all_articles, count_articles,
-    parse_frontmatter, split_frontmatter, write_article,
+    atomic_write_text, parse_frontmatter, split_frontmatter, write_article,
     extract_typed_links, load_sources,
     rebuild_index,
 )
@@ -258,7 +258,7 @@ def merge_duplicates(dry_run: bool = False) -> dict:
                 if absorb_slug in text:
                     new_text = text.replace(absorb_slug, keep_slug)
                     if new_text != text:
-                        path.write_text(new_text, encoding="utf-8")
+                        atomic_write_text(path, new_text)
                         stats["redirects_updated"] += 1
 
         stats["merged"] += 1

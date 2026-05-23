@@ -11,10 +11,15 @@ import os
 import re
 import sys
 import time
+import tempfile
+from copy import deepcopy
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Callable, TypeVar
 
 import yaml
+
+T = TypeVar("T")
 
 # Load .env if present — lets users set OPENROUTER_API_KEY in a .env file
 # instead of exporting it in their shell. Falls back silently if not installed.
@@ -35,7 +40,7 @@ CONFIG_DIR = KB_ROOT / "config"
 SOURCES_FILE = WIKI_DIR / "_sources.json"
 INDEX_FILE = WIKI_DIR / "_index.md"
 
-WIKI_SECTIONS_DEFAULT = ["concepts", "entities", "events", "research"]
+WIKI_SECTIONS_DEFAULT = ["concepts", "entities", "events", "research", "tools"]
 
 # ---------------------------------------------------------------------------
 # Link type constants (single source of truth)
@@ -101,6 +106,53 @@ def locked_open(path, mode="a"):
             _unlock(f)
 
 
+def atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Write a file atomically via temp file + rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding=encoding) as tmp:
+        tmp.write(content)
+        tmp.flush()
+        os.fsync(tmp.fileno())
+        tmp_path = Path(tmp.name)
+    os.replace(tmp_path, path)
+
+
+def locked_write_text(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Atomically write plain text under an exclusive lock."""
+    lock_path = path.parent / f".{path.name}.lock"
+    with locked_open(lock_path, "a"):
+        atomic_write_text(path, content, encoding=encoding)
+
+
+def read_json_file(path: Path, default):
+    """Read JSON under lock, or return a deep-copied default if missing."""
+    lock_path = path.parent / f".{path.name}.lock"
+    with locked_open(lock_path, "a"):
+        if not path.exists() or path.stat().st_size == 0:
+            return deepcopy(default)
+        return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json_file(path: Path, data) -> None:
+    """Atomically write JSON under an exclusive lock."""
+    lock_path = path.parent / f".{path.name}.lock"
+    with locked_open(lock_path, "a"):
+        atomic_write_text(path, json.dumps(data, indent=2) + "\n")
+
+
+def update_json_file(path: Path, default, updater: Callable[[dict | list], T]) -> T:
+    """Read-modify-write a JSON file under lock with atomic replacement."""
+    lock_path = path.parent / f".{path.name}.lock"
+    with locked_open(lock_path, "a"):
+        if path.exists() and path.stat().st_size > 0:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            data = deepcopy(default)
+        result = updater(data)
+        atomic_write_text(path, json.dumps(data, indent=2) + "\n")
+        return result
+
+
 # ---------------------------------------------------------------------------
 # Generic JSON file IO
 # ---------------------------------------------------------------------------
@@ -157,8 +209,9 @@ def load_config(config_path: Path | None = None) -> dict:
         sys.exit(1)
     with open(path, encoding="utf-8") as f:
         config = json.load(f)
-    if "llm" not in config:
-        print(f"Error: config missing required 'llm' section", file=sys.stderr)
+    missing = [k for k in ("llm",) if k not in config]
+    if missing:
+        print(f"Error: config missing required section(s): {', '.join(missing)}", file=sys.stderr)
         print(f"  Check {path} against config/config.example.json", file=sys.stderr)
         sys.exit(1)
     return config
@@ -186,7 +239,7 @@ def make_llm_client(config: dict | None = None) -> tuple:
     else:
         llm_cfg = config
 
-    local_url = llm_cfg.get("local_url", "http://localhost:11434/v1")
+    local_url = llm_cfg.get("local_url", "http://127.0.0.1:8010/v1")
     local_model = llm_cfg.get("local_model", "gemma4")
     max_tokens = llm_cfg.get("local_max_tokens", 6000)
 
@@ -300,16 +353,13 @@ def count_articles(wiki_dir: Path | None = None) -> int:
 def load_sources(sources_file: Path | None = None) -> dict:
     """Load _sources.json."""
     sf = sources_file or SOURCES_FILE
-    if sf.exists():
-        return json.loads(sf.read_text(encoding="utf-8"))
-    return {"processed": {}}
+    return read_json_file(sf, {"processed": {}})
 
 
 def save_sources(sources: dict, sources_file: Path | None = None) -> None:
     """Write _sources.json with file locking."""
     sf = sources_file or SOURCES_FILE
-    with locked_open(sf, "w") as f:
-        f.write(json.dumps(sources, indent=2))
+    write_json_file(sf, sources)
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +407,7 @@ def write_article(path: Path, fm: dict, body: str) -> None:
 
     _Dumper.add_representer(list, _list_representer)
     fm_out = yaml.dump(fm, Dumper=_Dumper, default_flow_style=False, allow_unicode=True).strip()
-    path.write_text(f"---\n{fm_out}\n---\n\n{body}", encoding="utf-8")
+    locked_write_text(path, f"---\n{fm_out}\n---\n\n{body}")
 
 
 def inject_metadata(path: Path, fields: dict) -> None:
@@ -548,8 +598,7 @@ def rebuild_index(index: dict[str, dict] | None = None,
             lines.append(entry)
         lines.append("")
 
-    with locked_open(idx_file, "w") as f:
-        f.write("\n".join(lines))
+    locked_write_text(idx_file, "\n".join(lines))
     return total
 
 

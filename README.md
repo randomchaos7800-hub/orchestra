@@ -68,7 +68,7 @@ Your research notes, articles, papers
 
 ## What You Need
 
-- Python 3.11+ with `openai`, `httpx`, and `pyyaml`
+- Python 3.10+ with `openai`, `httpx`, `pyyaml`, and `python-dotenv`
 - One of:
   - A local llama-server (or any OpenAI-compatible local endpoint)
   - An OpenRouter API key
@@ -125,7 +125,6 @@ python tools/search_hybrid.py "transformer attention"
 python tools/suggest_links.py
 
 # Run tests
-pip install pytest
 pytest tests/ -v
 
 # (Optional) Automate with cron

@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.common import (
     KB_ROOT, RAW_DIR, WIKI_DIR, CONFIG_DIR, INDEX_FILE,
-    locked_open, make_llm_client, llm_call, load_config,
+    locked_open, locked_write_text, make_llm_client, llm_call, load_config,
     get_wiki_sections,
     load_sources, save_sources,
     parse_frontmatter, inject_metadata,
@@ -173,8 +173,7 @@ def _write_stale_report(stale: list[dict], wiki_dir: Path) -> None:
                 f"via `{s['newest_source']}`"
             )
 
-    with locked_open(meta_dir / "stale.md", "w") as f:
-        f.write("\n".join(lines) + "\n")
+    locked_write_text(meta_dir / "stale.md", "\n".join(lines) + "\n")
     logger.info(f"Stale report: {len(stale)} stale article(s)")
 
 
@@ -338,8 +337,7 @@ Use [[type:slug]] or [[slug]] syntax for cross-references."""
             content = re.sub(r"\n?```$", "", content).strip()
 
         article_path.parent.mkdir(parents=True, exist_ok=True)
-        with locked_open(article_path, "w") as f:
-            f.write(content)
+        locked_write_text(article_path, content)
         logger.info(f"  {action.upper()}: {path_str}")
         touched.append(path_str)
         if summary:

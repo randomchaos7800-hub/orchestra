@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.common import (
     locked_open, load_config, make_llm_client, llm_call,
     parse_llm_json, sanitize_content, git_auto_commit,
+    read_json_file, write_json_file,
 )
 
 # Paths relative to project root
@@ -43,18 +44,13 @@ _VALID_PROJECT_RE = re.compile(r"^[A-Z][A-Z0-9_-]*$")
 
 def load_processed() -> set[str]:
     """Load the set of already-processed conversation IDs."""
-    if not PROCESSED_PATH.exists():
-        return set()
-    with open(PROCESSED_PATH, encoding="utf-8") as f:
-        data = json.load(f)
+    data = read_json_file(PROCESSED_PATH, {"processed_ids": []})
     return set(data.get("processed_ids", []))
 
 
 def save_processed(ids: set[str]) -> None:
     """Persist the set of processed conversation IDs."""
-    PROCESSED_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(PROCESSED_PATH, "w", encoding="utf-8") as f:
-        json.dump({"processed_ids": sorted(ids)}, f, indent=2)
+    write_json_file(PROCESSED_PATH, {"processed_ids": sorted(ids)})
 
 
 # ---------------------------------------------------------------------------

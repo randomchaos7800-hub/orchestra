@@ -33,6 +33,7 @@ from lib.common import (
     get_wiki_sections, all_articles, count_articles,
     parse_frontmatter, extract_wikilink_slugs,
     load_sources, make_llm_client, INDEX_FILE,
+    atomic_write_text,
     staleness_check as check_stale,
 )
 
@@ -255,7 +256,7 @@ def format_report(stale, orphan_briefs, orphan_articles, dead_links, link_types,
 def _write_meta(path: Path, title: str, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    path.write_text(f"# {title}\n_Last updated: {now}_\n\n{content}\n", encoding="utf-8")
+    atomic_write_text(path, f"# {title}\n_Last updated: {now}_\n\n{content}\n")
 
 
 def write_meta_files(stale, orphan_articles, stale_by_date=None, unwritten=None, suggestions=None):
