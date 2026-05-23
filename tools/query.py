@@ -17,7 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.common import WIKI_DIR, INDEX_FILE, get_wiki_sections, make_llm_client, llm_call
+from lib.common import (
+    WIKI_DIR, INDEX_FILE, get_wiki_sections, make_llm_client,
+    cached_llm_call, locked_write_text,
+)
 
 
 def _find_relevant_articles(question: str) -> list[Path]:
@@ -55,7 +58,8 @@ def _find_relevant_articles(question: str) -> list[Path]:
     return list(set(relevant))[:6]
 
 
-def answer_question(question: str, output_format: str = "markdown") -> str:
+def answer_question(question: str, output_format: str = "markdown",
+                    use_cache: bool = True) -> str:
     """Answer a question using wiki content as context."""
     client, model, _ = make_llm_client()
 
@@ -87,7 +91,16 @@ def answer_question(question: str, output_format: str = "markdown") -> str:
     user = f"QUESTION: {question}\n\n{format_instructions}\n\nKNOWLEDGE BASE:\n{chr(10).join(context_parts)}"
 
     try:
-        return llm_call(client, model, system, user, max_tokens=4000)
+        return cached_llm_call(
+            client,
+            model,
+            system,
+            user,
+            max_tokens=4000,
+            cache_namespace="query-answer",
+            prompt_version="v1",
+            use_cache=use_cache,
+        )
     except Exception as e:
         return f"LLM error: {e}"
 
@@ -97,20 +110,22 @@ def main():
     parser.add_argument("question")
     parser.add_argument("--output", type=str, help="Write answer to file")
     parser.add_argument("--slides", type=str, help="Write as Marp slides to file")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Disable the on-disk LLM cache for this run")
     args = parser.parse_args()
 
     if args.slides:
-        answer = answer_question(args.question, output_format="slides")
+        answer = answer_question(args.question, output_format="slides", use_cache=not args.no_cache)
         Path(args.slides).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.slides).write_text(answer, encoding="utf-8")
+        locked_write_text(Path(args.slides), answer)
         print(f"Slides written to {args.slides}")
     elif args.output:
-        answer = answer_question(args.question)
+        answer = answer_question(args.question, use_cache=not args.no_cache)
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.output).write_text(answer, encoding="utf-8")
+        locked_write_text(Path(args.output), answer)
         print(f"Answer written to {args.output}")
     else:
-        print(answer_question(args.question))
+        print(answer_question(args.question, use_cache=not args.no_cache))
 
 
 if __name__ == "__main__":

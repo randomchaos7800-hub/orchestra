@@ -24,7 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from lib.common import WIKI_DIR, parse_frontmatter
+from lib.common import WIKI_DIR, parse_frontmatter, locked_write_text
 from search_hybrid import _get_collection, _collect_articles, _rel
 
 SUGGESTIONS_FILE = WIKI_DIR / "meta" / "suggestions.md"
@@ -200,7 +200,7 @@ def main() -> None:
         print(output)
     else:
         SUGGESTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SUGGESTIONS_FILE.write_text(output, encoding="utf-8")
+        locked_write_text(SUGGESTIONS_FILE, output)
         print(f"Written to {SUGGESTIONS_FILE}")
         print("\n--- Preview (first 30 lines) ---")
         for line in output.splitlines()[:30]:

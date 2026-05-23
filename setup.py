@@ -16,6 +16,10 @@ import shutil
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib.common import locked_write_text, write_json_file
+
 BASE_DIR = Path(__file__).parent
 
 
@@ -84,9 +88,7 @@ def copy_example_config() -> bool:
         with open(example, encoding="utf-8") as f:
             config = json.load(f)
 
-    with open(target, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-        f.write("\n")
+    write_json_file(target, config)
 
     print("  [ok] config/config.json created from example")
     return True
@@ -98,20 +100,17 @@ def create_wiki_files() -> None:
     sources_path = BASE_DIR / "wiki" / "_sources.json"
 
     if not index_path.exists():
-        index_path.write_text(
+        locked_write_text(
+            index_path,
             "# Wiki Index\n\nArticle count: 0\n\n"
             "## Concepts\n\n## Entities\n\n## Events\n\n## Research\n\n## Tools\n",
-            encoding="utf-8",
         )
         print("  [ok] wiki/_index.md created")
     else:
         print("  [skip] wiki/_index.md already exists")
 
     if not sources_path.exists():
-        sources_path.write_text(
-            json.dumps({"processed": {}}, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_json_file(sources_path, {"processed": {}})
         print("  [ok] wiki/_sources.json created")
     else:
         print("  [skip] wiki/_sources.json already exists")
@@ -124,7 +123,8 @@ def create_gitignore() -> None:
         print("  [skip] .gitignore already exists")
         return
 
-    gitignore_path.write_text(
+    locked_write_text(
+        gitignore_path,
         "config/config.json\n"
         "*.pyc\n"
         "__pycache__/\n"
@@ -133,8 +133,8 @@ def create_gitignore() -> None:
         "venv/\n"
         "*.egg-info/\n"
         "dist/\n"
-        "build/\n",
-        encoding="utf-8",
+        "build/\n"
+        "cache/\n",
     )
     print("  [ok] .gitignore created")
 
@@ -194,9 +194,7 @@ def prompt_llm_config() -> None:
         config["llm"]["fallback_api_key_env"] = key_env
 
     # Write updated config
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-        f.write("\n")
+    write_json_file(config_path, config)
 
     print("\n  [ok] config/config.json updated with LLM settings")
 

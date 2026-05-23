@@ -12,8 +12,10 @@ import re
 import sys
 import time
 import tempfile
+import hashlib
 from copy import deepcopy
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -39,6 +41,8 @@ WIKI_DIR = KB_ROOT / "wiki"
 CONFIG_DIR = KB_ROOT / "config"
 SOURCES_FILE = WIKI_DIR / "_sources.json"
 INDEX_FILE = WIKI_DIR / "_index.md"
+CACHE_DIR = KB_ROOT / "cache"
+LLM_CACHE_DIR = CACHE_DIR / "llm"
 
 WIKI_SECTIONS_DEFAULT = ["concepts", "entities", "events", "research", "tools"]
 
@@ -98,6 +102,7 @@ except ImportError:
 @contextmanager
 def locked_open(path, mode="a"):
     """Open file with exclusive lock to prevent concurrent write corruption."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, mode, encoding="utf-8") as f:
         _lock(f)
         try:
@@ -150,6 +155,19 @@ def update_json_file(path: Path, default, updater: Callable[[dict | list], T]) -
             data = deepcopy(default)
         result = updater(data)
         atomic_write_text(path, json.dumps(data, indent=2) + "\n")
+        return result
+
+
+def update_text_file(path: Path, default: str, updater: Callable[[str], tuple[str, T]]) -> T:
+    """Read-modify-write a text file under lock with atomic replacement."""
+    lock_path = path.parent / f".{path.name}.lock"
+    with locked_open(lock_path, "a"):
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+        else:
+            text = default
+        new_text, result = updater(text)
+        atomic_write_text(path, new_text)
         return result
 
 
@@ -312,6 +330,56 @@ def llm_call(client, model: str, system: str, user: str, max_tokens: int = 6000,
     raise RuntimeError(f"LLM call failed after 3 attempts: {last_exc}") from last_exc
 
 
+def build_llm_cache_key(model: str, system: str, user: str,
+                        max_tokens: int, prompt_version: str = "v1") -> str:
+    """Build a stable cache key for an LLM prompt."""
+    payload = {
+        "model": model,
+        "system": system,
+        "user": user,
+        "max_tokens": max_tokens,
+        "prompt_version": prompt_version,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def cached_llm_call(client, model: str, system: str, user: str,
+                    max_tokens: int = 6000, request_delay: float = 0.0,
+                    cache_namespace: str = "default", prompt_version: str = "v1",
+                    use_cache: bool = True) -> str:
+    """Run an LLM call with an on-disk content-addressed cache."""
+    if not use_cache:
+        return llm_call(
+            client, model, system, user, max_tokens=max_tokens,
+            request_delay=request_delay,
+        )
+
+    cache_key = build_llm_cache_key(model, system, user, max_tokens, prompt_version=prompt_version)
+    cache_dir = LLM_CACHE_DIR / cache_namespace
+    cache_path = cache_dir / f"{cache_key}.json"
+    cached = read_json_file(cache_path, {})
+    if isinstance(cached, dict) and isinstance(cached.get("response"), str):
+        return cached["response"]
+
+    response = llm_call(
+        client, model, system, user, max_tokens=max_tokens,
+        request_delay=request_delay,
+    )
+    write_json_file(cache_path, {
+        "cache_key": cache_key,
+        "namespace": cache_namespace,
+        "prompt_version": prompt_version,
+        "model": model,
+        "max_tokens": max_tokens,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "system_sha256": hashlib.sha256(system.encode("utf-8")).hexdigest(),
+        "user_sha256": hashlib.sha256(user.encode("utf-8")).hexdigest(),
+        "response": response,
+    })
+    return response
+
+
 # ---------------------------------------------------------------------------
 # Wiki section discovery
 # ---------------------------------------------------------------------------
@@ -397,6 +465,11 @@ def split_frontmatter(text: str) -> tuple[dict, str]:
 
 def write_article(path: Path, fm: dict, body: str) -> None:
     """Write article with YAML frontmatter."""
+    locked_write_text(path, render_article_text(fm, body))
+
+
+def render_article_text(fm: dict, body: str) -> str:
+    """Render article content with YAML frontmatter."""
     class _Dumper(yaml.Dumper):
         pass
 
@@ -407,19 +480,24 @@ def write_article(path: Path, fm: dict, body: str) -> None:
 
     _Dumper.add_representer(list, _list_representer)
     fm_out = yaml.dump(fm, Dumper=_Dumper, default_flow_style=False, allow_unicode=True).strip()
-    locked_write_text(path, f"---\n{fm_out}\n---\n\n{body}")
+    return f"---\n{fm_out}\n---\n\n{body}"
+
+
+def update_article(path: Path, updater: Callable[[dict, str], tuple[dict, str, T]]) -> T:
+    """Update article frontmatter/body under a single file lock."""
+    def _apply(text: str) -> tuple[str, T]:
+        fm, body = split_frontmatter(text)
+        new_fm, new_body, result = updater(fm, body)
+        return render_article_text(new_fm, new_body), result
+
+    return update_text_file(path, "", _apply)
 
 
 def inject_metadata(path: Path, fields: dict) -> None:
     """Inject or update fields in an article's YAML frontmatter."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except Exception:
+    if not path.exists():
         return
-
-    fm, body = split_frontmatter(text)
-    fm.update(fields)
-    write_article(path, fm, body)
+    update_article(path, lambda fm, body: (fm | fields, body, None))
 
 
 # ---------------------------------------------------------------------------
@@ -627,15 +705,16 @@ def inject_reciprocal_backlinks(source_slug: str, links: list[dict],
 
         inverse_type = INVERSE_LINK_TYPE.get(link_type, "related")
         try:
-            text = target_path.read_text(encoding="utf-8")
-            fm = parse_frontmatter(text)
-            existing_links = fm.get("links", [])
-            if not isinstance(existing_links, list):
-                existing_links = []
-            if any(l.get("target") == source_slug for l in existing_links if isinstance(l, dict)):
-                continue
-            existing_links.append({"target": source_slug, "type": inverse_type})
-            inject_metadata(target_path, {"links": existing_links})
+            def _updater(fm: dict, body: str) -> tuple[dict, str, bool]:
+                existing_links = fm.get("links", [])
+                if not isinstance(existing_links, list):
+                    existing_links = []
+                if any(l.get("target") == source_slug for l in existing_links if isinstance(l, dict)):
+                    return fm, body, False
+                fm["links"] = existing_links + [{"target": source_slug, "type": inverse_type}]
+                return fm, body, True
+
+            update_article(target_path, _updater)
         except Exception:
             pass
 

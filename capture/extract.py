@@ -25,7 +25,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.common import (
-    locked_open, load_config, make_llm_client, llm_call,
+    locked_open, load_config, make_llm_client, cached_llm_call,
     parse_llm_json, sanitize_content, git_auto_commit,
     read_json_file, write_json_file,
 )
@@ -156,7 +156,7 @@ def should_skip(conv: dict, config: dict) -> str | None:
     return None
 
 
-def extract_insights(client, model: str, conv: dict, config: dict) -> dict | None:
+def extract_insights(client, model: str, conv: dict, config: dict, use_cache: bool = True) -> dict | None:
     """Use LLM to classify and extract insights from a conversation."""
     capture_cfg = config.get("capture", {})
     projects = capture_cfg.get("projects", {})
@@ -207,7 +207,16 @@ Respond in this exact JSON format:
 }}"""
 
     try:
-        raw = llm_call(client, model, system, prompt, max_tokens=1500)
+        raw = cached_llm_call(
+            client,
+            model,
+            system,
+            prompt,
+            max_tokens=1500,
+            cache_namespace="capture-extract",
+            prompt_version="v1",
+            use_cache=use_cache,
+        )
         result = parse_llm_json(raw)
         if result is None:
             print(f"  ERROR parsing LLM response for '{title}'")
@@ -251,6 +260,8 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--config", default=None)
     parser.add_argument("--git", action="store_true")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Disable the on-disk LLM cache for this run")
     args = parser.parse_args()
 
     config_path = Path(args.config).resolve() if args.config else None
@@ -300,7 +311,7 @@ def main() -> None:
             continue
 
         print(f"[{i+1:03d}] ...   {title[:60]} ({msg_count} msgs)")
-        result = extract_insights(client, model, conv, config)
+        result = extract_insights(client, model, conv, config, use_cache=not args.no_cache)
         stats["processed"] += 1
 
         if not result:

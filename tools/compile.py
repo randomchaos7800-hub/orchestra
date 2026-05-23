@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.common import (
     KB_ROOT, RAW_DIR, WIKI_DIR, CONFIG_DIR, INDEX_FILE,
-    locked_open, locked_write_text, make_llm_client, llm_call, load_config,
+    locked_open, locked_write_text, make_llm_client, cached_llm_call, load_config,
     get_wiki_sections,
     load_sources, save_sources,
     parse_frontmatter, inject_metadata,
@@ -51,7 +51,7 @@ def _mark_processed(sources: dict, raw_path: Path, articles_touched: list[str]) 
 
 # -- Concept expansion --------------------------------------------------------
 
-def _expand_concepts(client, model: str, concepts: list[str]) -> list[str]:
+def _expand_concepts(client, model: str, concepts: list[str], use_cache: bool = True) -> list[str]:
     """Generate alternate phrasings for cross-reference matching."""
     if not concepts:
         return []
@@ -61,7 +61,16 @@ def _expand_concepts(client, model: str, concepts: list[str]) -> list[str]:
         f"Return ONLY a flat comma-separated list of terms."
     )
     try:
-        raw = llm_call(client, model, "You are a semantic expansion tool.", prompt, max_tokens=300)
+        raw = cached_llm_call(
+            client,
+            model,
+            "You are a semantic expansion tool.",
+            prompt,
+            max_tokens=300,
+            cache_namespace="compile-expand-concepts",
+            prompt_version="v1",
+            use_cache=use_cache,
+        )
         terms = [t.strip().lower() for t in raw.split(",") if t.strip()]
         original_lower = {c.lower() for c in concepts}
         return [t for t in dict.fromkeys(terms) if t not in original_lower]
@@ -182,6 +191,7 @@ def _write_stale_report(stale: list[dict], wiki_dir: Path) -> None:
 def compile_file(
     raw_path: Path, client, model: str,
     max_tokens: int = 6000, dry_run: bool = False, verbose: bool = False,
+    use_cache: bool = True,
 ) -> list[str]:
     """Two-pass LLM compile: JSON plan then markdown content per article."""
     compile_rules = (CONFIG_DIR / "compile-rules.md").read_text(encoding="utf-8")
@@ -233,7 +243,16 @@ Return the JSON plan only."""
         logger.info(f"=== PASS 1 PROMPT ({len(plan_user)} chars) ===\n{plan_user[:300]}...")
 
     try:
-        plan_response = llm_call(client, model, plan_system, plan_user, max_tokens=2000)
+        plan_response = cached_llm_call(
+            client,
+            model,
+            plan_system,
+            plan_user,
+            max_tokens=2000,
+            cache_namespace="compile-plan",
+            prompt_version="v1",
+            use_cache=use_cache,
+        )
     except Exception as e:
         logger.error(f"Pass 1 failed for {raw_path.name}: {e}")
         return None  # retryable failure — do not mark processed
@@ -326,7 +345,16 @@ Use [[type:slug]] or [[slug]] syntax for cross-references."""
             logger.info(f"=== PASS 2 PROMPT for {path_str} ===\n{content_user[:300]}...")
 
         try:
-            content = llm_call(client, model, content_system, content_user, max_tokens=max_tokens)
+            content = cached_llm_call(
+                client,
+                model,
+                content_system,
+                content_user,
+                max_tokens=max_tokens,
+                cache_namespace="compile-article",
+                prompt_version="v1",
+                use_cache=use_cache,
+            )
         except Exception as e:
             logger.error(f"Pass 2 failed for {path_str}: {e}")
             continue
@@ -358,7 +386,7 @@ Use [[type:slug]] or [[slug]] syntax for cross-references."""
                 or sorted(existing_concepts) != sorted(core_concepts)
             )
             if needs_expansion:
-                expanded = _expand_concepts(client, model, core_concepts)
+                expanded = _expand_concepts(client, model, core_concepts, use_cache=use_cache)
                 if expanded:
                     metadata["expanded_terms"] = expanded
 
@@ -387,6 +415,8 @@ def main():
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--recompile-stale", action="store_true")
     parser.add_argument("--git", action="store_true")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Disable the on-disk LLM cache for this run")
     args = parser.parse_args()
 
     if args.verbose:
@@ -416,7 +446,8 @@ def main():
             logger.info(f"Recompiling: {source_rel}")
             try:
                 touched = compile_file(raw_path, client, model, max_tokens=max_tokens,
-                                       dry_run=args.dry_run, verbose=args.verbose)
+                                       dry_run=args.dry_run, verbose=args.verbose,
+                                       use_cache=not args.no_cache)
                 if not args.dry_run and touched:
                     _mark_processed(sources, raw_path, touched)
                     save_sources(sources)
@@ -451,7 +482,8 @@ def main():
             logger.info(f"Compiling: {raw_path.relative_to(KB_ROOT)}")
             try:
                 touched = compile_file(raw_path, client, model, max_tokens=max_tokens,
-                                       dry_run=args.dry_run, verbose=args.verbose)
+                                       dry_run=args.dry_run, verbose=args.verbose,
+                                       use_cache=not args.no_cache)
                 if touched is None:
                     continue  # retryable LLM/parse failure, already logged
                 total_articles += len(touched)

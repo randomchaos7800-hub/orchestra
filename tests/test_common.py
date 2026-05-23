@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from lib.common import (
     parse_frontmatter, split_frontmatter, write_article,
     extract_typed_links, extract_wikilink_slugs,
-    parse_llm_json, sanitize_content, llm_call,
+    parse_llm_json, sanitize_content, llm_call, cached_llm_call,
+    build_llm_cache_key, inject_metadata,
     inject_reciprocal_backlinks, load_config,
     LINK_TYPES, INVERSE_LINK_TYPE,
 )
@@ -271,6 +272,56 @@ class TestLlmCall:
         mock_sleep.assert_called_once_with(0.5)
 
 
+class TestCachedLlmCall:
+    def _mock_client(self, content: str):
+        client = MagicMock()
+        msg = MagicMock()
+        msg.content = content
+        choice = MagicMock()
+        choice.message = msg
+        client.chat.completions.create.return_value = MagicMock(choices=[choice])
+        return client
+
+    def test_cache_key_changes_when_prompt_changes(self):
+        first = build_llm_cache_key("model", "sys", "user-a", 100)
+        second = build_llm_cache_key("model", "sys", "user-b", 100)
+        assert first != second
+
+    def test_cached_call_writes_cache_entry(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("lib.common.LLM_CACHE_DIR", tmp_path / "llm-cache")
+        client = self._mock_client("cached result")
+
+        result = cached_llm_call(
+            client, "model", "sys", "user",
+            max_tokens=100, cache_namespace="tests", use_cache=True,
+        )
+
+        assert result == "cached result"
+        cached_files = list((tmp_path / "llm-cache" / "tests").glob("*.json"))
+        assert len(cached_files) == 1
+        payload = json.loads(cached_files[0].read_text(encoding="utf-8"))
+        assert payload["response"] == "cached result"
+        assert payload["namespace"] == "tests"
+
+    def test_cached_call_uses_existing_entry(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("lib.common.LLM_CACHE_DIR", tmp_path / "llm-cache")
+        client = self._mock_client("first result")
+
+        first = cached_llm_call(
+            client, "model", "sys", "user",
+            max_tokens=100, cache_namespace="tests", use_cache=True,
+        )
+        assert first == "first result"
+        assert client.chat.completions.create.call_count == 1
+
+        second = cached_llm_call(
+            client, "model", "sys", "user",
+            max_tokens=100, cache_namespace="tests", use_cache=True,
+        )
+        assert second == "first result"
+        assert client.chat.completions.create.call_count == 1
+
+
 class TestLoadConfig:
     def test_missing_config_exits(self, tmp_path):
         with pytest.raises(SystemExit):
@@ -285,6 +336,18 @@ class TestLoadConfig:
 
 
 class TestInjectReciprocalBacklinks:
+    def test_inject_metadata_preserves_body(self, tmp_path):
+        article = tmp_path / "article.md"
+        article.write_text("---\ntitle: Test\n---\n\nBody here.\n", encoding="utf-8")
+
+        inject_metadata(article, {"tags": ["a", "b"]})
+
+        text = article.read_text(encoding="utf-8")
+        fm = parse_frontmatter(text)
+        assert fm["title"] == "Test"
+        assert fm["tags"] == ["a", "b"]
+        assert "Body here." in text
+
     def test_backlink_injected(self, tmp_path):
         wiki = tmp_path / "wiki"
         concepts = wiki / "concepts"

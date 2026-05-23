@@ -33,7 +33,7 @@ from lib.common import (
     get_wiki_sections, all_articles, count_articles,
     parse_frontmatter, extract_wikilink_slugs,
     load_sources, make_llm_client, INDEX_FILE,
-    atomic_write_text,
+    cached_llm_call, locked_write_text,
     staleness_check as check_stale,
 )
 
@@ -156,7 +156,8 @@ def check_last_compile(sources: dict) -> str:
 
 # -- LLM suggestions ----------------------------------------------------------
 
-def _llm_suggestions(articles: dict[str, Path], orphans: list[str], unwritten: list[tuple[str, int]]) -> str:
+def _llm_suggestions(articles: dict[str, Path], orphans: list[str],
+                     unwritten: list[tuple[str, int]], use_cache: bool = True) -> str:
     """Ask LLM to suggest new articles and connections."""
     try:
         client, model, _ = make_llm_client()
@@ -182,11 +183,19 @@ Suggest:
 1. 3-5 new articles worth creating (based on gaps and orphan context)
 2. 3-5 connection pairs that should have backlinks but don't
 
-Return as clean markdown, no preamble."""
+    Return as clean markdown, no preamble."""
 
     try:
-        from lib.common import llm_call
-        return llm_call(client, model, "You are a wiki structural analyst.", prompt, max_tokens=1500)
+        return cached_llm_call(
+            client,
+            model,
+            "You are a wiki structural analyst.",
+            prompt,
+            max_tokens=1500,
+            cache_namespace="health-suggestions",
+            prompt_version="v1",
+            use_cache=use_cache,
+        )
     except Exception as e:
         return f"*(LLM suggestion failed: {e})*"
 
@@ -256,7 +265,7 @@ def format_report(stale, orphan_briefs, orphan_articles, dead_links, link_types,
 def _write_meta(path: Path, title: str, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    atomic_write_text(path, f"# {title}\n_Last updated: {now}_\n\n{content}\n")
+    locked_write_text(path, f"# {title}\n_Last updated: {now}_\n\n{content}\n")
 
 
 def write_meta_files(stale, orphan_articles, stale_by_date=None, unwritten=None, suggestions=None):
@@ -293,6 +302,8 @@ def main():
     parser.add_argument("--write", action="store_true", help="Write results to wiki/meta/*.md")
     parser.add_argument("--stale-days", type=int, default=30, help="Days before article considered stale by date")
     parser.add_argument("--suggest", action="store_true", help="LLM-assisted gap analysis")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Disable the on-disk LLM cache for LLM-assisted suggestions")
     args = parser.parse_args()
 
     articles = all_articles()
@@ -323,7 +334,9 @@ def main():
     suggestions = None
     if args.suggest:
         print("\nRunning LLM gap analysis...")
-        suggestions = _llm_suggestions(articles, orphan_articles, unwritten)
+        suggestions = _llm_suggestions(
+            articles, orphan_articles, unwritten, use_cache=not args.no_cache,
+        )
         print(suggestions)
 
     if args.write or args.suggest:
