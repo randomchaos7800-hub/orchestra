@@ -41,10 +41,10 @@ OPENROUTER_API_KEY=your-key-here  # Fallback API key
 
 ## Output
 
-Capture writes to a `projects/` directory. Each domain gets its own file:
+Capture writes to a `capture/projects/` directory. Each domain gets its own file:
 
 ```
-projects/
+capture/projects/
 ├── PROJECTS.md      # Project-specific knowledge
 ├── GENERAL.md       # Cross-cutting insights
 ├── STRATEGY.md      # Strategic decisions and rationale
@@ -94,7 +94,7 @@ The project files can be synced to cloud storage for backup and cross-device acc
 
 ```bash
 # Example: rclone to Google Drive every 30 minutes
-*/30 * * * * rclone sync /path/to/orchestra/projects/ gdrive:orchestra/projects/
+*/30 * * * * rclone sync /path/to/orchestra/capture/projects/ gdrive:orchestra/capture/projects/
 ```
 
 This is optional. The files are local by default. Sync is your choice, your provider, your schedule.

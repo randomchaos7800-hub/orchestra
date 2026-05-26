@@ -68,7 +68,7 @@ Your research notes, articles, papers
 
 ## What You Need
 
-- Python 3.10+ with `openai`, `httpx`, and `pyyaml`
+- Python 3.11+ with `openai`, `httpx`, and `pyyaml`
 - One of:
   - A local llama-server (or any OpenAI-compatible local endpoint)
   - An OpenRouter API key

@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.common import KB_ROOT
 
-PROJECTS_DIR = KB_ROOT / "projects"
+PROJECTS_DIR = KB_ROOT / "capture" / "projects"
 DEFAULT_THRESHOLD_KB = 512
 
 # Entry header pattern: ## YYYY-MM-DD - Title

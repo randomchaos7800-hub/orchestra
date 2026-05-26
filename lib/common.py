@@ -144,7 +144,7 @@ def make_llm_client(config: dict | None = None) -> tuple:
     else:
         llm_cfg = config
 
-    local_url = llm_cfg.get("local_url", "http://100.120.50.35:8010/v1")
+    local_url = llm_cfg.get("local_url", "http://localhost:11434/v1")
     local_model = llm_cfg.get("local_model", "gemma4")
     max_tokens = llm_cfg.get("local_max_tokens", 6000)
 

@@ -106,7 +106,7 @@ Run the compile step on a schedule:
 
 ```bash
 # Cron: 9 PM daily
-0 21 * * * cd /path/to/orchestra && python wiki/compile.py
+0 21 * * * cd /path/to/orchestra && python tools/compile.py
 ```
 
 Why 9 PM: if you're dropping notes throughout the day, or have agents generating research briefs in the morning, the evening compile step sees all of the day's inputs at once. Batching lets the LLM make better classification decisions than processing files one at a time.
