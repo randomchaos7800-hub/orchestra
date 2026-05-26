@@ -237,7 +237,7 @@ Return the JSON plan only."""
         plan_response = llm_call(client, model, plan_system, plan_user, max_tokens=2000)
     except Exception as e:
         logger.error(f"Pass 1 failed for {raw_path.name}: {e}")
-        return []
+        return None  # retryable failure — do not mark processed
 
     if verbose:
         logger.info(f"=== PASS 1 RESPONSE ===\n{plan_response[:500]}")
@@ -245,7 +245,7 @@ Return the JSON plan only."""
     plan_data = parse_llm_json(plan_response)
     if plan_data is None:
         logger.error(f"Pass 1 JSON parse failed for {raw_path.name}")
-        return []
+        return None  # retryable failure — do not mark processed
 
     articles_plan = plan_data.get("articles", [])
     if not articles_plan:
@@ -454,6 +454,8 @@ def main():
             try:
                 touched = compile_file(raw_path, client, model, max_tokens=max_tokens,
                                        dry_run=args.dry_run, verbose=args.verbose)
+                if touched is None:
+                    continue  # retryable LLM/parse failure, already logged
                 total_articles += len(touched)
                 if not args.dry_run:
                     _mark_processed(sources, raw_path, touched)

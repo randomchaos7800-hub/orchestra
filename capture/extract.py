@@ -287,8 +287,8 @@ def main() -> None:
 
         if not result:
             stats["errors"] += 1
-            if conv_id:
-                newly_processed.add(conv_id)
+            # Do not add to newly_processed — transient LLM/API failure,
+            # leave unprocessed so the next run retries this conversation.
             continue
 
         projects = result.get("projects", [])
