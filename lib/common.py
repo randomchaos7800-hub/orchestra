@@ -102,6 +102,49 @@ def locked_open(path, mode="a"):
 
 
 # ---------------------------------------------------------------------------
+# Generic JSON file IO
+# ---------------------------------------------------------------------------
+
+def read_json_file(path: Path, default):
+    """Return parsed JSON from path, or default if the file doesn't exist."""
+    if not Path(path).exists():
+        return default
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_json_file(path: Path, data) -> None:
+    """Write data as indented JSON with a trailing newline."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def update_json_file(path: Path, default, updater) -> None:
+    """Thread-safe read-modify-write for a JSON file using file locking.
+
+    Opens with 'a+' so the file is created if absent. Reads current content,
+    falls back to default if empty, applies updater(data) in-place, writes back.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+", encoding="utf-8") as f:
+        _lock(f)
+        try:
+            f.seek(0)
+            content = f.read()
+            data = json.loads(content) if content.strip() else default
+            updater(data)
+            f.seek(0)
+            f.truncate()
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        finally:
+            _unlock(f)
+
+
+# ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
 
@@ -114,9 +157,8 @@ def load_config(config_path: Path | None = None) -> dict:
         sys.exit(1)
     with open(path, encoding="utf-8") as f:
         config = json.load(f)
-    missing = [k for k in ("llm", "capture") if k not in config]
-    if missing:
-        print(f"Error: config missing required section(s): {', '.join(missing)}", file=sys.stderr)
+    if "llm" not in config:
+        print(f"Error: config missing required 'llm' section", file=sys.stderr)
         print(f"  Check {path} against config/config.example.json", file=sys.stderr)
         sys.exit(1)
     return config
