@@ -110,12 +110,24 @@ def index_articles(force: bool = False, verbose: bool = True) -> int:
     """Incrementally index all articles into ChromaDB. Returns count added/updated."""
     _, col, _ = _get_collection()
     articles = _collect_articles()
+    article_ids = [_rel(p) for p in articles]
 
     existing: dict[str, str] = {}
     try:
-        existing_data = col.get(ids=[_rel(p) for p in articles], include=["metadatas"])
+        existing_data = col.get(ids=article_ids, include=["metadatas"])
         for doc_id, meta in zip(existing_data["ids"], existing_data["metadatas"]):
             existing[doc_id] = meta.get("indexed_at", "0")
+    except Exception:
+        pass
+
+    # Remove index entries for articles that no longer exist on disk.
+    try:
+        all_indexed = col.get(include=[])
+        stale_ids = [doc_id for doc_id in all_indexed.get("ids", []) if doc_id not in set(article_ids)]
+        if stale_ids:
+            col.delete(ids=stale_ids)
+            if verbose:
+                print(f"  Pruned {len(stale_ids)} stale indexed article(s).")
     except Exception:
         pass
 

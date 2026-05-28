@@ -23,8 +23,28 @@ from lib.common import (
 )
 
 
+def _resolve_article_from_result_id(result_id: str) -> Path:
+    """Return the wiki path for a hybrid-search result id."""
+    return WIKI_DIR / result_id
+
+
 def _find_relevant_articles(question: str) -> list[Path]:
     """Find articles relevant to the question by slug/keyword matching."""
+    try:
+        from tools.search_hybrid import hybrid_search
+
+        hybrid_hits = hybrid_search(question, top_n=6)
+        resolved = []
+        for hit in hybrid_hits:
+            path = _resolve_article_from_result_id(hit["id"])
+            if path.exists():
+                resolved.append(path)
+        if resolved:
+            return resolved
+    except Exception:
+        # Fall back to simple local matching if hybrid search is unavailable.
+        pass
+
     question_lower = question.lower()
     relevant = []
 

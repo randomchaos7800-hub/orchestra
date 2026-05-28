@@ -6,10 +6,13 @@ All tests use tmp_path fixtures and mock LLM calls. No real API requests.
 """
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from capture.extract import conversation_dedup_key, load_processed, save_processed
 from capture.parsers.claude import parse_claude_export
@@ -574,3 +577,43 @@ class TestClassificationPrompt:
         )
         result = response.choices[0].message.content.strip()
         assert result not in valid_projects
+
+
+class TestCaptureProcessingBehavior:
+    def test_failed_llm_extraction_is_not_marked_processed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        from capture import extract as capture_extract
+
+        export_file = tmp_path / "conversations.json"
+        export_file.write_text("[]", encoding="utf-8")
+        processed_file = tmp_path / "processed.json"
+
+        conversations = [{
+            "id": "conv-error",
+            "title": "Important Conversation",
+            "updated_at": "2026-05-28T12:00:00Z",
+            "messages": [
+                {"role": "user", "content": "x" * 120},
+                {"role": "assistant", "content": "y" * 120},
+                {"role": "user", "content": "z" * 120},
+            ],
+        }]
+
+        monkeypatch.setattr(capture_extract, "PROCESSED_PATH", processed_file)
+        monkeypatch.setattr(capture_extract, "PROJECTS_DIR", tmp_path / "projects")
+        monkeypatch.setattr(capture_extract, "detect_and_parse", lambda _: conversations)
+        monkeypatch.setattr(
+            capture_extract,
+            "load_config",
+            lambda _: {"llm": {}, "capture": {"projects": {"GENERAL": "General"}, "min_messages": 1}},
+        )
+        monkeypatch.setattr(capture_extract, "make_llm_client", lambda config=None: (MagicMock(), "test-model", 1000))
+        monkeypatch.setattr(capture_extract, "extract_insights", lambda *args, **kwargs: None)
+        monkeypatch.setattr(sys, "argv", ["extract.py", "--input", str(export_file)])
+
+        capture_extract.main()
+
+        if processed_file.exists():
+            stored = json.loads(processed_file.read_text(encoding="utf-8"))
+            assert stored["processed_ids"] == []
+        else:
+            assert True
