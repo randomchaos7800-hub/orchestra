@@ -192,26 +192,21 @@ def write_json_file(path: Path, data) -> None:
 
 
 def update_json_file(path: Path, default, updater) -> None:
-    """Thread-safe read-modify-write for a JSON file using file locking.
+    """Thread-safe read-modify-write for a JSON file using a sidecar lock.
 
-    Opens with 'a+' so the file is created if absent. Reads current content,
-    falls back to default if empty, applies updater(data) in-place, writes back.
+    Locks a sibling `.lock` file, reads the current JSON payload (or deep-copied
+    default), applies updater(data) in-place, then atomically rewrites the JSON.
+    This avoids the append-mode corruption trap of writing through `a+`.
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a+", encoding="utf-8") as f:
-        _lock(f)
-        try:
-            f.seek(0)
-            content = f.read()
-            data = json.loads(content) if content.strip() else default
-            updater(data)
-            f.seek(0)
-            f.truncate()
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        finally:
-            _unlock(f)
+    lock_path = path.parent / f".{path.name}.lock"
+    with locked_open(lock_path, "a"):
+        if path.exists() and path.stat().st_size > 0:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            data = deepcopy(default)
+        updater(data)
+        atomic_write_text(path, json.dumps(data, indent=2) + "\n")
 
 
 # ---------------------------------------------------------------------------
