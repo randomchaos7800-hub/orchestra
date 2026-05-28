@@ -28,6 +28,19 @@ def _resolve_article_from_result_id(result_id: str) -> Path:
     return WIKI_DIR / result_id
 
 
+def _append_source_paths(answer: str, source_paths: list[Path], output_format: str) -> str:
+    """Append deterministic source paths to the generated answer."""
+    if not source_paths:
+        return answer
+
+    rel_paths = [str(path.relative_to(WIKI_DIR)) for path in source_paths]
+    if output_format == "slides":
+        appendix = ["---", "## Sources", *[f"- `{path}`" for path in rel_paths]]
+    else:
+        appendix = ["", "## Sources", *[f"- `{path}`" for path in rel_paths]]
+    return answer.rstrip() + "\n" + "\n".join(appendix) + "\n"
+
+
 def _find_relevant_articles(question: str) -> list[Path]:
     """Find articles relevant to the question by slug/keyword matching."""
     try:
@@ -111,7 +124,7 @@ def answer_question(question: str, output_format: str = "markdown",
     user = f"QUESTION: {question}\n\n{format_instructions}\n\nKNOWLEDGE BASE:\n{chr(10).join(context_parts)}"
 
     try:
-        return cached_llm_call(
+        answer = cached_llm_call(
             client,
             model,
             system,
@@ -121,6 +134,7 @@ def answer_question(question: str, output_format: str = "markdown",
             prompt_version="v1",
             use_cache=use_cache,
         )
+        return _append_source_paths(answer, relevant, output_format)
     except Exception as e:
         return f"LLM error: {e}"
 

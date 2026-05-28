@@ -8,7 +8,7 @@ Orchestra turns your AI chat history into structured, searchable knowledge that 
 
 **Wiki** compiles research notes and extracted knowledge into a self-maintaining wiki with cross-references, an index, and health monitoring that flags stale or orphaned articles.
 
-Both run on local inference or a cheap API key. BYO LLM — local llama-server, OpenRouter, any OpenAI-compatible endpoint. The scripts don't care what's answering as long as it speaks the API.
+Both are designed to run local-first. BYO LLM — local llama-server, OpenRouter, any OpenAI-compatible endpoint. The intended default is local inference for background knowledge work, with remote APIs as fallback or optional override.
 
 ## What You Get
 
@@ -168,7 +168,7 @@ Both `capture/extract.py` and `tools/compile.py` support `--git` to auto-commit 
 
 **Raw data is sacred.** Conversation exports are never modified. Project files are append-only. Wiki articles are the only layer that gets rewritten, and the raw inputs that fed them are preserved. If any derived output drifts from reality, regenerate it from source.
 
-**Local inference for background work.** Classification and compilation are structured tasks with clear success criteria. A quantized 26B model on a $300 mini PC handles them fine. Save commercial API tokens for conversations where quality is visible.
+**Local inference for background work.** Classification and compilation are structured tasks with clear success criteria. A quantized 26B model on a $300 mini PC handles them fine. This is the intended default path. Save commercial API tokens for fallback or for work where quality is visible.
 
 **Boring technology.** Python. Markdown. Cron. Grep. SQLite if you need it, but you probably don't. The boring choice is the one that works at 3 AM when nobody's watching and still works in five years when the trendy tool has been abandoned.
 

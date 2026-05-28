@@ -218,7 +218,7 @@ def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
 
 # -- Hybrid search -------------------------------------------------------------
 
-def hybrid_search(query: str, top_n: int = 5) -> list[dict]:
+def hybrid_search(query: str, top_n: int = 5, full_corpus: bool = False) -> list[dict]:
     """Hybrid BM25 + vector search with RRF fusion. Returns results sorted by score."""
     _, col, _ = _get_collection()
 
@@ -240,20 +240,35 @@ def hybrid_search(query: str, top_n: int = 5) -> list[dict]:
 
     vec_scores = {vid: 1.0 - vd for vid, vd in zip(vec_ids, vec_dists)}
 
-    # BM25 scores only the top-N vector candidates, not the full corpus. Fast and good
-    # enough for most queries, but exact-match queries (acronyms, proper names, code)
-    # may fall outside the top-N and get no BM25 boost. A --full-corpus flag would fix
-    # this at the cost of scoring every article on every query.
     query_terms = _tokenize(query)
-    bm25_raw = _bm25_score(query_terms, vec_docs)
-    bm25_ranking = [doc_id for doc_id, _ in sorted(zip(vec_ids, bm25_raw), key=lambda x: x[1], reverse=True)]
-    bm25_scores = dict(zip(vec_ids, bm25_raw))
+    meta_map = dict(zip(vec_ids, vec_metas))
+    doc_map = dict(zip(vec_ids, vec_docs))
+
+    if full_corpus:
+        article_rows = []
+        for path in _collect_articles():
+            rel = _rel(path)
+            result = _build_doc(path, rel)
+            if result is None:
+                continue
+            doc_id, meta, document = result
+            article_rows.append((doc_id, meta, document))
+            meta_map.setdefault(doc_id, meta)
+            doc_map.setdefault(doc_id, document)
+        bm25_ids = [doc_id for doc_id, _, _ in article_rows]
+        bm25_docs = [document for _, _, document in article_rows]
+    else:
+        bm25_ids = vec_ids
+        bm25_docs = vec_docs
+
+    bm25_raw = _bm25_score(query_terms, bm25_docs)
+    bm25_ranking = [
+        doc_id for doc_id, _ in sorted(zip(bm25_ids, bm25_raw), key=lambda x: x[1], reverse=True)
+    ]
+    bm25_scores = dict(zip(bm25_ids, bm25_raw))
 
     fused = _rrf([vec_ids, bm25_ranking], k=60)
     ranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)[:top_n]
-
-    meta_map = dict(zip(vec_ids, vec_metas))
-    doc_map = dict(zip(vec_ids, vec_docs))
 
     results = []
     for doc_id, fused_score in ranked:
@@ -325,6 +340,11 @@ def main() -> None:
     parser.add_argument("--top", type=int, default=5, metavar="N", help="Number of results (default 5)")
     parser.add_argument("--reindex", action="store_true", help="Force full reindex of all articles")
     parser.add_argument("--stats", action="store_true", help="Show index statistics")
+    parser.add_argument(
+        "--full-corpus",
+        action="store_true",
+        help="Score BM25 across the full wiki corpus instead of only vector candidates",
+    )
     args = parser.parse_args()
 
     if args.stats:
@@ -341,7 +361,7 @@ def main() -> None:
         sys.exit(1)
 
     index_articles(force=False, verbose=False)
-    results = hybrid_search(args.query, top_n=args.top)
+    results = hybrid_search(args.query, top_n=args.top, full_corpus=args.full_corpus)
     print_results(results, args.query)
 
 

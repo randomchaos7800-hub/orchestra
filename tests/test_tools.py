@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -50,6 +51,29 @@ def test_query_prefers_hybrid_search_when_available(tmp_path: Path, monkeypatch)
     assert result == [article]
 
 
+def test_query_appends_source_paths(tmp_path: Path, monkeypatch):
+    wiki_dir = tmp_path / "wiki"
+    (wiki_dir / "concepts").mkdir(parents=True)
+    article = wiki_dir / "concepts" / "agent-memory.md"
+    article.write_text("# Agent Memory\n\nUseful content.", encoding="utf-8")
+    index_file = wiki_dir / "_index.md"
+    index_file.write_text("# Index\n", encoding="utf-8")
+
+    monkeypatch.setattr(query_tool, "WIKI_DIR", wiki_dir)
+    monkeypatch.setattr(query_tool, "INDEX_FILE", index_file)
+    monkeypatch.setattr(query_tool, "_find_relevant_articles", lambda question: [article])
+    monkeypatch.setattr(query_tool, "make_llm_client", lambda: (MagicMock(), "model", 1000))
+    monkeypatch.setattr(
+        query_tool,
+        "cached_llm_call",
+        lambda *args, **kwargs: "Answer body.",
+    )
+
+    result = query_tool.answer_question("What is agent memory?")
+    assert "## Sources" in result
+    assert "`concepts/agent-memory.md`" in result
+
+
 def test_hybrid_index_prunes_deleted_articles(tmp_path: Path, monkeypatch):
     wiki_dir = tmp_path / "wiki"
     (wiki_dir / "concepts").mkdir(parents=True)
@@ -66,3 +90,31 @@ def test_hybrid_index_prunes_deleted_articles(tmp_path: Path, monkeypatch):
     assert fake_collection.deleted_ids == ["concepts/stale.md"]
     assert updated == 1
     assert fake_collection.upserted_ids == ["concepts/fresh.md"]
+
+
+def test_hybrid_search_supports_full_corpus_bm25(tmp_path: Path, monkeypatch):
+    wiki_dir = tmp_path / "wiki"
+    (wiki_dir / "concepts").mkdir(parents=True)
+    exact = wiki_dir / "concepts" / "warp-drive.md"
+    exact.write_text("---\ntitle: Warp Drive\n---\n\nWarp drive exact phrase.", encoding="utf-8")
+    semantic = wiki_dir / "concepts" / "space-travel.md"
+    semantic.write_text("---\ntitle: Space Travel\n---\n\nGeneral travel article.", encoding="utf-8")
+
+    class FakeSearchCollection:
+        def count(self):
+            return 1
+
+        def query(self, query_texts, n_results, include):
+            return {
+                "ids": [["concepts/space-travel.md"]],
+                "metadatas": [[{"title": "Space Travel", "tags": "", "updated": "", "section": "concepts"}]],
+                "documents": [["Space Travel\n\nGeneral travel article."]],
+                "distances": [[0.1]],
+            }
+
+    monkeypatch.setattr(search_hybrid, "WIKI_DIR", wiki_dir)
+    monkeypatch.setattr(search_hybrid, "_get_collection", lambda chroma_dir=None: (None, FakeSearchCollection(), None))
+
+    results = search_hybrid.hybrid_search("warp drive", top_n=3, full_corpus=True)
+    ids = [row["id"] for row in results]
+    assert "concepts/warp-drive.md" in ids

@@ -181,6 +181,49 @@ class TestClaudeParser:
         result = parse_claude_export(export_file)
         assert result[0]["messages"][0]["content"] == "Part one. Part two."
 
+    def test_tool_result_blocks_preserved(self, tmp_path: Path):
+        data = [{
+            "uuid": "x",
+            "name": "Tool Result",
+            "updated_at": "",
+            "chat_messages": [{
+                "sender": "assistant",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "content": [
+                            {"type": "text", "text": "Tool output text."},
+                            "String payload.",
+                        ],
+                    }
+                ],
+            }],
+        }]
+        export_file = tmp_path / "conversations.json"
+        export_file.write_text(json.dumps(data), encoding="utf-8")
+
+        result = parse_claude_export(export_file)
+        assert result[0]["messages"][0]["content"] == "Tool output text. String payload."
+
+    def test_non_text_string_fields_preserved(self, tmp_path: Path):
+        data = [{
+            "uuid": "x",
+            "name": "Structured Block",
+            "updated_at": "",
+            "chat_messages": [{
+                "sender": "assistant",
+                "content": [
+                    {"type": "tool_use", "input": "Lookup account balance"},
+                    {"type": "tool_use", "output": "Balance is $512"},
+                ],
+            }],
+        }]
+        export_file = tmp_path / "conversations.json"
+        export_file.write_text(json.dumps(data), encoding="utf-8")
+
+        result = parse_claude_export(export_file)
+        assert result[0]["messages"][0]["content"] == "Lookup account balance Balance is $512"
+
 
 # ---------------------------------------------------------------------------
 # ChatGPT parser tests

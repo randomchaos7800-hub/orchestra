@@ -1,6 +1,6 @@
 # Local Inference
 
-Both Capture and Wiki can run entirely on local inference. This page documents what that actually looks like on commodity hardware — real numbers, real constraints, no benchmarketing.
+Both Capture and Wiki are intended to run entirely on local inference by default. This page documents what that actually looks like on commodity hardware — real numbers, real constraints, no benchmarketing.
 
 ## Why Local
 
@@ -78,7 +78,7 @@ The durable part isn't the specific model or hardware — it's the pattern: **ru
 
 If local inference is unavailable (server down, box off, model swapped), both Capture and Wiki fall back to OpenRouter or any configured API endpoint. The scripts try local first, fall back silently, and log which backend answered.
 
-This means you can start with API-only (no local hardware), add local inference later when you want to reduce costs, and the scripts don't change. The LLM endpoint is configuration, not code.
+This means you can start with API-only (no local hardware), add local inference later when you want to reduce costs, and the scripts don't change. But the architectural intent is local-first: background knowledge work should stay on hardware you control whenever possible. The LLM endpoint is configuration, not code.
 
 ## What Doesn't Work Locally
 
