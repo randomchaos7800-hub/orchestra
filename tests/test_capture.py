@@ -623,6 +623,28 @@ class TestClassificationPrompt:
 
 
 class TestCaptureProcessingBehavior:
+    def test_extract_insights_rejects_schema_invalid_payload(self, monkeypatch: pytest.MonkeyPatch):
+        from capture import extract as capture_extract
+
+        conv = {
+            "title": "Malformed Response",
+            "updated_at": "2026-05-28T12:00:00Z",
+            "messages": [
+                {"role": "user", "content": "x" * 120},
+                {"role": "assistant", "content": "y" * 120},
+                {"role": "user", "content": "z" * 120},
+            ],
+        }
+        config = {"capture": {"projects": {"GENERAL": "General", "RESEARCH": "Research"}}}
+
+        monkeypatch.setattr(
+            capture_extract,
+            "cached_llm_call",
+            lambda *args, **kwargs: json.dumps({"projects": "GENERAL", "entries": "bad"}),
+        )
+
+        assert capture_extract.extract_insights(MagicMock(), "model", conv, config) is None
+
     def test_failed_llm_extraction_is_not_marked_processed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         from capture import extract as capture_extract
 

@@ -33,6 +33,7 @@ from lib.common import (
     extract_typed_links, parse_llm_json, git_auto_commit,
     load_index, read_existing_summaries, rebuild_index,
     inject_reciprocal_backlinks, staleness_check,
+    validate_compile_plan, validate_article_content,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -264,6 +265,11 @@ Return the JSON plan only."""
     if plan_data is None:
         logger.error(f"Pass 1 JSON parse failed for {raw_path.name}")
         return None  # retryable failure — do not mark processed
+    try:
+        plan_data = validate_compile_plan(plan_data)
+    except ValueError as exc:
+        logger.error(f"Pass 1 validation failed for {raw_path.name}: {exc}")
+        return None  # malformed plan — do not write partial results
 
     articles_plan = plan_data.get("articles", [])
     if not articles_plan:
@@ -363,6 +369,12 @@ Use [[type:slug]] or [[slug]] syntax for cross-references."""
         if content.startswith("```"):
             content = re.sub(r"^```[a-z]*\n?", "", content)
             content = re.sub(r"\n?```$", "", content).strip()
+
+        try:
+            content = validate_article_content(content)
+        except ValueError as exc:
+            logger.error(f"Pass 2 validation failed for {path_str}: {exc}")
+            continue
 
         article_path.parent.mkdir(parents=True, exist_ok=True)
         locked_write_text(article_path, content)

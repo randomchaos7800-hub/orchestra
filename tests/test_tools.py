@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tools import query as query_tool
+from tools import compile as compile_tool
 from tools import search_hybrid
 
 
@@ -118,3 +119,26 @@ def test_hybrid_search_supports_full_corpus_bm25(tmp_path: Path, monkeypatch):
     results = search_hybrid.hybrid_search("warp drive", top_n=3, full_corpus=True)
     ids = [row["id"] for row in results]
     assert "concepts/warp-drive.md" in ids
+
+
+def test_compile_rejects_invalid_plan_before_writing(tmp_path: Path, monkeypatch):
+    wiki_dir = tmp_path / "wiki"
+    raw_dir = tmp_path / "raw"
+    config_dir = tmp_path / "config"
+    (wiki_dir / "concepts").mkdir(parents=True)
+    raw_dir.mkdir()
+    config_dir.mkdir()
+
+    raw_file = raw_dir / "note.md"
+    raw_file.write_text("# Note\n\nUseful source.", encoding="utf-8")
+    (config_dir / "compile-rules.md").write_text("Rules.", encoding="utf-8")
+    (config_dir / "wiki-style.md").write_text("Style.", encoding="utf-8")
+
+    monkeypatch.setattr(compile_tool, "WIKI_DIR", wiki_dir)
+    monkeypatch.setattr(compile_tool, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(compile_tool, "KB_ROOT", tmp_path)
+    monkeypatch.setattr(compile_tool, "cached_llm_call", lambda *args, **kwargs: '{"articles":[{"action":"create","title":"Bad"}]}')
+
+    touched = compile_tool.compile_file(raw_file, MagicMock(), "model", dry_run=False)
+    assert touched is None
+    assert list((wiki_dir / "concepts").glob("*.md")) == []

@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.common import (
     locked_open, load_config, make_llm_client, cached_llm_call,
     parse_llm_json, sanitize_content, git_auto_commit,
-    read_json_file, write_json_file,
+    read_json_file, write_json_file, validate_capture_response,
 )
 
 # Paths relative to project root
@@ -220,7 +220,16 @@ Respond in this exact JSON format:
         result = parse_llm_json(raw)
         if result is None:
             print(f"  ERROR parsing LLM response for '{title}'")
-        return result
+            return None
+        try:
+            return validate_capture_response(
+                result,
+                project_names,
+                default_project="GENERAL" if "GENERAL" in project_names else (project_names[0] if project_names else "GENERAL"),
+            )
+        except ValueError as exc:
+            print(f"  ERROR validating LLM response for '{title}': {exc}")
+            return None
     except Exception as e:
         print(f"  ERROR extracting '{title}': {e}")
         return None

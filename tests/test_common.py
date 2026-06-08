@@ -16,6 +16,7 @@ from lib.common import (
     build_llm_cache_key, inject_metadata,
     inject_reciprocal_backlinks, load_config,
     LINK_TYPES, INVERSE_LINK_TYPE,
+    validate_capture_response, validate_compile_plan, validate_article_content,
 )
 
 
@@ -147,6 +148,66 @@ class TestParseLlmJson:
         raw = '{"articles": [{"path": "concepts/test.md", "title": "Test"}]}'
         result = parse_llm_json(raw)
         assert len(result["articles"]) == 1
+
+
+class TestResponseValidation:
+    def test_validate_capture_response_accepts_valid_payload(self):
+        payload = {
+            "projects": ["RESEARCH"],
+            "entries": [{
+                "project": "RESEARCH",
+                "title": "Agent Memory",
+                "content": "Three-tier memory model with explicit recall.",
+                "trigger": "",
+            }],
+        }
+        result = validate_capture_response(payload, {"GENERAL", "RESEARCH"})
+        assert result["projects"] == ["RESEARCH"]
+        assert result["entries"][0]["title"] == "Agent Memory"
+
+    def test_validate_capture_response_falls_back_to_general_project(self):
+        payload = {
+            "projects": ["UNKNOWN"],
+            "entries": [{
+                "project": "UNKNOWN",
+                "title": "Agent Memory",
+                "content": "Use recall summaries.",
+            }],
+        }
+        result = validate_capture_response(payload, {"GENERAL", "RESEARCH"})
+        assert result["projects"] == ["GENERAL"]
+        assert result["entries"][0]["project"] == "GENERAL"
+
+    def test_validate_capture_response_rejects_invalid_entries_shape(self):
+        with pytest.raises(ValueError, match="entries"):
+            validate_capture_response({"projects": [], "entries": "bad"}, {"GENERAL"})
+
+    def test_validate_compile_plan_accepts_valid_payload(self):
+        plan = {
+            "articles": [{
+                "path": "concepts/agent-memory.md",
+                "action": "create",
+                "title": "Agent Memory",
+                "summary": "How recall works.",
+                "tags": ["agents"],
+                "sections": ["Overview"],
+                "core_concepts": ["memory"],
+            }]
+        }
+        result = validate_compile_plan(plan)
+        assert result["articles"][0]["path"] == "concepts/agent-memory.md"
+
+    def test_validate_compile_plan_rejects_missing_path(self):
+        with pytest.raises(ValueError, match="path"):
+            validate_compile_plan({"articles": [{"action": "create", "title": "Test"}]})
+
+    def test_validate_article_content_accepts_frontmatter_article(self):
+        content = "---\ntitle: Agent Memory\n---\n\n## Overview\n\nContent."
+        assert validate_article_content(content).startswith("---")
+
+    def test_validate_article_content_rejects_missing_frontmatter(self):
+        with pytest.raises(ValueError, match="frontmatter"):
+            validate_article_content("# Title\n\nNo frontmatter.")
 
 
 class TestSanitizeContent:

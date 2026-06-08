@@ -172,44 +172,6 @@ def update_text_file(path: Path, default: str, updater: Callable[[str], tuple[st
 
 
 # ---------------------------------------------------------------------------
-# Generic JSON file IO
-# ---------------------------------------------------------------------------
-
-def read_json_file(path: Path, default):
-    """Return parsed JSON from path, or default if the file doesn't exist."""
-    if not Path(path).exists():
-        return default
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def write_json_file(path: Path, data) -> None:
-    """Write data as indented JSON with a trailing newline."""
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-
-
-def update_json_file(path: Path, default, updater) -> None:
-    """Thread-safe read-modify-write for a JSON file using a sidecar lock.
-
-    Locks a sibling `.lock` file, reads the current JSON payload (or deep-copied
-    default), applies updater(data) in-place, then atomically rewrites the JSON.
-    This avoids the append-mode corruption trap of writing through `a+`.
-    """
-    path = Path(path)
-    lock_path = path.parent / f".{path.name}.lock"
-    with locked_open(lock_path, "a"):
-        if path.exists() and path.stat().st_size > 0:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        else:
-            data = deepcopy(default)
-        updater(data)
-        atomic_write_text(path, json.dumps(data, indent=2) + "\n")
-
-
-# ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
 
@@ -560,6 +522,155 @@ def parse_llm_json(raw: str) -> dict | None:
             pass
 
     return None
+
+
+def validate_capture_response(
+    data: dict,
+    valid_projects: list[str] | set[str],
+    default_project: str = "GENERAL",
+) -> dict:
+    """Validate and normalize a capture extraction payload.
+
+    Returns a sanitized structure suitable for writing to disk.
+    Raises ValueError when the payload is structurally invalid.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("capture response must be a JSON object")
+
+    projects = data.get("projects", [])
+    entries = data.get("entries", [])
+    skip_reason = str(data.get("skip_reason", "") or "").strip()
+
+    if not isinstance(projects, list):
+        raise ValueError("capture response 'projects' must be a list")
+    if not isinstance(entries, list):
+        raise ValueError("capture response 'entries' must be a list")
+
+    valid = set(valid_projects)
+    normalized_projects: list[str] = []
+    for project in projects:
+        if not isinstance(project, str):
+            continue
+        proj = project.strip() or default_project
+        if proj not in valid:
+            proj = default_project
+        if proj not in normalized_projects:
+            normalized_projects.append(proj)
+
+    normalized_entries = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        project = str(entry.get("project", "") or "").strip() or default_project
+        if project not in valid:
+            project = default_project
+
+        title = sanitize_content(str(entry.get("title", "") or "").strip(), max_length=200)
+        content = sanitize_content(str(entry.get("content", "") or "").strip())
+        trigger = sanitize_content(str(entry.get("trigger", "") or "").strip(), max_length=500)
+
+        if not title or not content:
+            continue
+
+        normalized_entries.append({
+            "project": project,
+            "title": title,
+            "trigger": trigger,
+            "content": content,
+        })
+        if project not in normalized_projects:
+            normalized_projects.append(project)
+
+    if entries and not normalized_entries:
+        raise ValueError("capture response contained no valid entries")
+
+    return {
+        "projects": normalized_projects,
+        "skip_reason": skip_reason,
+        "entries": normalized_entries,
+    }
+
+
+def validate_compile_plan(data: dict) -> dict:
+    """Validate and normalize a compile plan before article generation starts."""
+    if not isinstance(data, dict):
+        raise ValueError("compile plan must be a JSON object")
+
+    articles = data.get("articles", [])
+    skipped_reason = str(data.get("skipped_reason", "") or "").strip()
+
+    if not isinstance(articles, list):
+        raise ValueError("compile plan 'articles' must be a list")
+
+    normalized_articles = []
+    valid_actions = {"create", "update"}
+    for article in articles:
+        if not isinstance(article, dict):
+            raise ValueError("each planned article must be an object")
+
+        path = str(article.get("path", "") or "").strip()
+        action = str(article.get("action", "") or "").strip().lower()
+        title = sanitize_content(str(article.get("title", "") or "").strip(), max_length=200)
+
+        if not path:
+            raise ValueError("planned article missing required field 'path'")
+        if action not in valid_actions:
+            raise ValueError(f"planned article has invalid action: {action!r}")
+        if not title:
+            raise ValueError("planned article missing required field 'title'")
+
+        tags = article.get("tags", [])
+        sections = article.get("sections", ["Overview", "Key Points", "Connections"])
+        core_concepts = article.get("core_concepts", [])
+
+        if tags is None:
+            tags = []
+        if sections is None:
+            sections = ["Overview", "Key Points", "Connections"]
+        if core_concepts is None:
+            core_concepts = []
+        if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+            raise ValueError("planned article 'tags' must be a list of strings")
+        if not isinstance(sections, list) or not all(isinstance(section, str) for section in sections):
+            raise ValueError("planned article 'sections' must be a list of strings")
+        if not isinstance(core_concepts, list) or not all(isinstance(term, str) for term in core_concepts):
+            raise ValueError("planned article 'core_concepts' must be a list of strings")
+
+        normalized_articles.append({
+            "path": path,
+            "action": action,
+            "title": title,
+            "summary": sanitize_content(str(article.get("summary", "") or "").strip(), max_length=500),
+            "tags": [sanitize_content(tag.strip(), max_length=100) for tag in tags if tag.strip()],
+            "sections": [sanitize_content(section.strip(), max_length=100) for section in sections if section.strip()],
+            "core_concepts": [sanitize_content(term.strip(), max_length=100) for term in core_concepts if term.strip()],
+        })
+
+    return {
+        "articles": normalized_articles,
+        "skipped_reason": skipped_reason,
+    }
+
+
+def validate_article_content(content: str) -> str:
+    """Validate article markdown before writing it to disk."""
+    if not isinstance(content, str):
+        raise ValueError("article content must be a string")
+
+    cleaned = sanitize_content(content.strip(), max_length=50000)
+    if not cleaned:
+        raise ValueError("article content is empty")
+    if not cleaned.startswith("---"):
+        raise ValueError("article content must start with YAML frontmatter")
+
+    fm, body = split_frontmatter(cleaned)
+    if not fm:
+        raise ValueError("article content is missing valid YAML frontmatter")
+    if not body.strip():
+        raise ValueError("article content body is empty")
+
+    return cleaned
 
 
 # ---------------------------------------------------------------------------

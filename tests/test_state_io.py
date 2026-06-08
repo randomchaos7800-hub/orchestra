@@ -1,13 +1,19 @@
 """Tests for shared JSON state IO and capture dedup persistence."""
 
+import inspect
 import json
 from concurrent.futures import ThreadPoolExecutor
 
 from capture.extract import load_processed, save_processed
+from lib import common
 from lib.common import read_json_file, update_json_file, write_json_file
 
 
 class TestJsonStateIo:
+    def test_json_helpers_remain_locking_implementations(self):
+        assert "locked_open" in inspect.getsource(common.read_json_file)
+        assert "locked_open" in inspect.getsource(common.write_json_file)
+
     def test_read_json_returns_default_for_missing_file(self, tmp_path):
         path = tmp_path / "missing.json"
         result = read_json_file(path, {"processed": {}})
@@ -32,6 +38,12 @@ class TestJsonStateIo:
 
         result = json.loads(path.read_text(encoding="utf-8"))
         assert sorted(result) == list(range(20))
+
+    def test_write_json_creates_lockfile_sidecar(self, tmp_path):
+        path = tmp_path / "state.json"
+        write_json_file(path, {"a": 1})
+        lock_path = path.parent / f".{path.name}.lock"
+        assert lock_path.exists()
 
 
 class TestProcessedJson:
