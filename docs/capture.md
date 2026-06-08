@@ -29,7 +29,7 @@ The `conversations.json` file contains the full conversation history. Capture re
 
 Capture uses a two-tier inference strategy:
 
-1. **Local first:** Tries to connect to a local llama-server at `127.0.0.1:8081/v1`. If it responds, all classification runs locally at zero cost.
+1. **Local first:** Tries to connect to a local LLM server at `127.0.0.1:8010/v1`. If it responds, all classification runs locally at zero cost.
 2. **API fallback:** If local inference is unavailable, falls back to OpenRouter (or any OpenAI-compatible endpoint) using the API key from your environment or config.
 
 The classification task is structured and well-defined — it doesn't need a frontier model. A quantized 26B model running locally handles it as well as a commercial API for this specific task.

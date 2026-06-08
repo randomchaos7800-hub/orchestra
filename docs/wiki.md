@@ -83,7 +83,7 @@ The compile script (`compile.py`) does the following:
 
 Same two-tier strategy as Capture:
 
-1. **Local first:** Tries `127.0.0.1:8081/v1`
+1. **Local first:** Tries `127.0.0.1:8010/v1`
 2. **API fallback:** Uses OpenRouter or any OpenAI-compatible endpoint via API key
 
 The compile task requires more reasoning than classification — the LLM needs to read existing articles, decide how new information relates, and write coherent updates. A 26B local model handles this adequately for most inputs. Larger or commercial models produce slightly better cross-referencing and more nuanced article updates.

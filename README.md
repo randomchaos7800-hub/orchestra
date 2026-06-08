@@ -125,6 +125,7 @@ python tools/search_hybrid.py "transformer attention"
 python tools/suggest_links.py
 
 # Run tests
+pip install -r requirements-dev.txt
 pytest tests/ -v
 
 # (Optional) Automate with cron
