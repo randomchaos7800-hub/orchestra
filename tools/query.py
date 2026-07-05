@@ -11,20 +11,20 @@ Usage:
 """
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.common import (
-    WIKI_DIR, INDEX_FILE, get_wiki_sections, make_llm_client,
+    WIKI_DIR, INDEX_FILE, make_llm_client,
     cached_llm_call, locked_write_text,
 )
+from lib.retrieval import search as retrieve_articles
 
 
 def _resolve_article_from_result_id(result_id: str) -> Path:
-    """Return the wiki path for a hybrid-search result id."""
+    """Return the wiki path for a retrieval result id."""
     return WIKI_DIR / result_id
 
 
@@ -41,58 +41,19 @@ def _append_source_paths(answer: str, source_paths: list[Path], output_format: s
     return answer.rstrip() + "\n" + "\n".join(appendix) + "\n"
 
 
-def _find_relevant_articles(question: str) -> list[Path]:
-    """Find articles relevant to the question by slug/keyword matching."""
-    try:
-        from tools.search_hybrid import hybrid_search
-
-        hybrid_hits = hybrid_search(question, top_n=6)
-        resolved = []
-        for hit in hybrid_hits:
-            path = _resolve_article_from_result_id(hit["id"])
-            if path.exists():
-                resolved.append(path)
-        if resolved:
-            return resolved
-    except Exception:
-        # Fall back to simple local matching if hybrid search is unavailable.
-        pass
-
-    question_lower = question.lower()
-    relevant = []
-
-    for section in get_wiki_sections():
-        section_dir = WIKI_DIR / section
-        if not section_dir.exists():
-            continue
-        for md_file in section_dir.rglob("*.md"):
-            slug = md_file.stem.lower()
-            title_words = slug.replace("-", " ")
-            if title_words in question_lower or any(
-                w in question_lower for w in slug.split("-") if len(w) > 4
-            ):
-                relevant.append(md_file)
-
-    # Fallback: keyword search in file content
-    if not relevant:
-        words = [w for w in re.findall(r'\w+', question_lower) if len(w) > 4]
-        for section in get_wiki_sections():
-            section_dir = WIKI_DIR / section
-            if not section_dir.exists():
-                continue
-            for md_file in section_dir.rglob("*.md"):
-                try:
-                    text = md_file.read_text(encoding="utf-8").lower()
-                    if sum(1 for w in words if w in text) >= 2:
-                        relevant.append(md_file)
-                except Exception:
-                    pass
-
-    return list(set(relevant))[:6]
+def _find_relevant_articles(question: str, mode: str = "lexical") -> list[Path]:
+    """Find articles relevant to the question through shared retrieval."""
+    hits = retrieve_articles(question, wiki_dir=WIKI_DIR, mode=mode, top_k=6)
+    resolved = []
+    for hit in hits:
+        path = _resolve_article_from_result_id(hit["id"])
+        if path.exists():
+            resolved.append(path)
+    return resolved
 
 
 def answer_question(question: str, output_format: str = "markdown",
-                    use_cache: bool = True) -> str:
+                    use_cache: bool = True, mode: str = "lexical") -> str:
     """Answer a question using wiki content as context."""
     client, model, _ = make_llm_client()
 
@@ -100,7 +61,7 @@ def answer_question(question: str, output_format: str = "markdown",
         return "Wiki is empty. Run `tools/compile.py` first."
 
     index_text = INDEX_FILE.read_text(encoding="utf-8")
-    relevant = _find_relevant_articles(question)
+    relevant = _find_relevant_articles(question, mode=mode)
 
     context_parts = [f"## WIKI INDEX\n{index_text[:3000]}"]
     for path in relevant:
@@ -146,20 +107,27 @@ def main():
     parser.add_argument("--slides", type=str, help="Write as Marp slides to file")
     parser.add_argument("--no-cache", action="store_true",
                         help="Disable the on-disk LLM cache for this run")
+    parser.add_argument("--mode", choices=["lexical", "hybrid"], default="lexical",
+                        help="Retrieval mode: lexical BM25 or hybrid BM25+vector RRF")
     args = parser.parse_args()
 
     if args.slides:
-        answer = answer_question(args.question, output_format="slides", use_cache=not args.no_cache)
+        answer = answer_question(
+            args.question,
+            output_format="slides",
+            use_cache=not args.no_cache,
+            mode=args.mode,
+        )
         Path(args.slides).parent.mkdir(parents=True, exist_ok=True)
         locked_write_text(Path(args.slides), answer)
         print(f"Slides written to {args.slides}")
     elif args.output:
-        answer = answer_question(args.question, use_cache=not args.no_cache)
+        answer = answer_question(args.question, use_cache=not args.no_cache, mode=args.mode)
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
         locked_write_text(Path(args.output), answer)
         print(f"Answer written to {args.output}")
     else:
-        print(answer_question(args.question, use_cache=not args.no_cache))
+        print(answer_question(args.question, use_cache=not args.no_cache, mode=args.mode))
 
 
 if __name__ == "__main__":

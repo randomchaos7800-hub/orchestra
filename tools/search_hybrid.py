@@ -17,36 +17,33 @@ Usage:
 """
 
 import argparse
-import math
-import re
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.common import KB_ROOT, WIKI_DIR, split_frontmatter
+from lib.common import KB_ROOT, WIKI_DIR
+from lib.retrieval import (
+    COLLECTION_NAME,
+    build_document,
+    collect_articles,
+    rel_id,
+    search as retrieve_articles,
+)
 
 CHROMA_DIR = KB_ROOT / ".chroma"
-COLLECTION_NAME = "wiki_articles"
 
 
 # -- Article discovery ---------------------------------------------------------
 
 def _collect_articles() -> list[Path]:
     """Return all indexable .md files (exclude _index.md, meta/, sources)."""
-    result = []
-    for p in WIKI_DIR.rglob("*.md"):
-        if p.name == "_index.md":
-            continue
-        if p.parent.name == "meta":
-            continue
-        result.append(p)
-    return sorted(result)
+    return collect_articles(WIKI_DIR)
 
 
 def _rel(path: Path) -> str:
-    return str(path.relative_to(WIKI_DIR))
+    return rel_id(path, WIKI_DIR)
 
 
 # -- ChromaDB + sentence-transformers setup ------------------------------------
@@ -80,30 +77,10 @@ def _get_collection(chroma_dir: Path | None = None):
 
 def _build_doc(path: Path, rel: str) -> tuple[str, dict, str] | None:
     """Return (doc_id, metadata, document_text) for a .md file, or None on error."""
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except Exception as e:
-        print(f"  Warning: cannot read {rel}: {e}", file=sys.stderr)
-        return None
-
-    meta_fm, body = split_frontmatter(raw)
-
-    title = meta_fm.get("title", path.stem.replace("-", " ").title())
-    tags = meta_fm.get("tags", "")
-    if isinstance(tags, list):
-        tags = ", ".join(tags)
-    updated = meta_fm.get("updated", meta_fm.get("last_compiled", ""))
-    section = path.parent.name
-
-    chroma_meta = {
-        "path": rel,
-        "title": title,
-        "tags": str(tags),
-        "updated": str(updated),
-        "section": section,
-        "indexed_at": str(int(path.stat().st_mtime)),
-    }
-    return rel, chroma_meta, f"{title}\n\n{body.strip()}"
+    result = build_document(path, WIKI_DIR)
+    if result is None:
+        print(f"  Warning: cannot read {rel}", file=sys.stderr)
+    return result
 
 
 def index_articles(force: bool = False, verbose: bool = True) -> int:
@@ -169,125 +146,25 @@ def index_articles(force: bool = False, verbose: bool = True) -> int:
     return len(to_upsert_ids)
 
 
-# -- BM25 (stdlib-only) -------------------------------------------------------
-
-def _tokenize(text: str) -> list[str]:
-    return re.findall(r"[a-zA-Z0-9]+", text.lower())
-
-
-def _bm25_score(query_terms: list[str], docs: list[str], k1: float = 1.5, b: float = 0.75) -> list[float]:
-    """Simple BM25 scorer. Returns a score per document."""
-    N = len(docs)
-    if N == 0:
-        return []
-
-    tokenized = [_tokenize(d) for d in docs]
-    avg_dl = sum(len(t) for t in tokenized) / N
-
-    df: dict[str, int] = {}
-    for term in query_terms:
-        df[term] = sum(1 for t in tokenized if term in t)
-
-    scores = []
-    for tokens in tokenized:
-        dl = len(tokens)
-        tf_map: dict[str, int] = {}
-        for tok in tokens:
-            tf_map[tok] = tf_map.get(tok, 0) + 1
-
-        score = 0.0
-        for term in query_terms:
-            tf = tf_map.get(term, 0)
-            idf = math.log((N - df.get(term, 0) + 0.5) / (df.get(term, 0) + 0.5) + 1)
-            score += idf * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avg_dl))
-        scores.append(score)
-
-    return scores
-
-
-# -- Reciprocal Rank Fusion ----------------------------------------------------
-
-def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
-    """Merge ranked lists via Reciprocal Rank Fusion."""
-    fused: dict[str, float] = {}
-    for ranking in rankings:
-        for rank, doc_id in enumerate(ranking):
-            fused[doc_id] = fused.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
-    return fused
-
-
 # -- Hybrid search -------------------------------------------------------------
 
 def hybrid_search(query: str, top_n: int = 5, full_corpus: bool = False) -> list[dict]:
-    """Hybrid BM25 + vector search with RRF fusion. Returns results sorted by score."""
-    _, col, _ = _get_collection()
+    """Hybrid BM25 + vector search with lexical fallback.
 
-    total_count = col.count()
-    if total_count == 0:
-        return []
-
-    n_vec = min(20, total_count)
-
-    vec_results = col.query(
-        query_texts=[query],
-        n_results=n_vec,
-        include=["metadatas", "documents", "distances"],
+    The full_corpus flag is retained for backward compatibility; the shared
+    retrieval layer always scores BM25 across the full wiki corpus.
+    """
+    try:
+        index_articles(force=False, verbose=False)
+    except Exception:
+        pass
+    return retrieve_articles(
+        query,
+        wiki_dir=WIKI_DIR,
+        mode="hybrid",
+        top_k=top_n,
+        chroma_dir=CHROMA_DIR,
     )
-    vec_ids: list[str] = vec_results["ids"][0]
-    vec_metas: list[dict] = vec_results["metadatas"][0]
-    vec_docs: list[str] = vec_results["documents"][0]
-    vec_dists: list[float] = vec_results["distances"][0]
-
-    vec_scores = {vid: 1.0 - vd for vid, vd in zip(vec_ids, vec_dists)}
-
-    query_terms = _tokenize(query)
-    meta_map = dict(zip(vec_ids, vec_metas))
-    doc_map = dict(zip(vec_ids, vec_docs))
-
-    if full_corpus:
-        article_rows = []
-        for path in _collect_articles():
-            rel = _rel(path)
-            result = _build_doc(path, rel)
-            if result is None:
-                continue
-            doc_id, meta, document = result
-            article_rows.append((doc_id, meta, document))
-            meta_map.setdefault(doc_id, meta)
-            doc_map.setdefault(doc_id, document)
-        bm25_ids = [doc_id for doc_id, _, _ in article_rows]
-        bm25_docs = [document for _, _, document in article_rows]
-    else:
-        bm25_ids = vec_ids
-        bm25_docs = vec_docs
-
-    bm25_raw = _bm25_score(query_terms, bm25_docs)
-    bm25_ranking = [
-        doc_id for doc_id, _ in sorted(zip(bm25_ids, bm25_raw), key=lambda x: x[1], reverse=True)
-    ]
-    bm25_scores = dict(zip(bm25_ids, bm25_raw))
-
-    fused = _rrf([vec_ids, bm25_ranking], k=60)
-    ranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)[:top_n]
-
-    results = []
-    for doc_id, fused_score in ranked:
-        meta = meta_map.get(doc_id, {})
-        doc = doc_map.get(doc_id, "")
-        body_lines = doc.split("\n", 2)
-        snippet = body_lines[2].strip()[:120] if len(body_lines) > 2 else ""
-        results.append({
-            "id": doc_id,
-            "title": meta.get("title", doc_id),
-            "tags": meta.get("tags", ""),
-            "updated": meta.get("updated", ""),
-            "section": meta.get("section", ""),
-            "fused_score": fused_score,
-            "vec_score": vec_scores.get(doc_id, 0.0),
-            "bm25_score": bm25_scores.get(doc_id, 0.0),
-            "snippet": snippet,
-        })
-    return results
 
 
 # -- Stats ---------------------------------------------------------------------
@@ -338,12 +215,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Hybrid BM25 + vector search over wiki")
     parser.add_argument("query", nargs="?", help="Search query string")
     parser.add_argument("--top", type=int, default=5, metavar="N", help="Number of results (default 5)")
+    parser.add_argument("--mode", choices=["lexical", "hybrid"], default="hybrid",
+                        help="Retrieval mode: lexical BM25 or hybrid BM25+vector RRF")
     parser.add_argument("--reindex", action="store_true", help="Force full reindex of all articles")
     parser.add_argument("--stats", action="store_true", help="Show index statistics")
     parser.add_argument(
         "--full-corpus",
         action="store_true",
-        help="Score BM25 across the full wiki corpus instead of only vector candidates",
+        help="Deprecated: BM25 is always scored across the full wiki corpus",
     )
     args = parser.parse_args()
 
@@ -360,8 +239,18 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    index_articles(force=False, verbose=False)
-    results = hybrid_search(args.query, top_n=args.top, full_corpus=args.full_corpus)
+    if args.mode == "hybrid":
+        try:
+            index_articles(force=False, verbose=False)
+        except Exception:
+            pass
+    results = retrieve_articles(
+        args.query,
+        wiki_dir=WIKI_DIR,
+        mode=args.mode,
+        top_k=args.top,
+        chroma_dir=CHROMA_DIR,
+    )
     print_results(results, args.query)
 
 
