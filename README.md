@@ -117,9 +117,10 @@ python tools/repair.py
 # Search the wiki (full-text, no extra dependencies)
 python tools/search.py "transformer attention"
 
-# Search the wiki (hybrid BM25 + vector, requires chromadb + sentence-transformers)
+# Search the wiki (lexical BM25 by default; hybrid adds optional vectors)
 pip install chromadb sentence-transformers
 python tools/search_hybrid.py "transformer attention"
+python tools/search_hybrid.py --mode hybrid "transformer attention"
 
 # Suggest missing links between articles (requires search_hybrid)
 python tools/suggest_links.py
@@ -144,9 +145,9 @@ pytest tests/ -v
 | `tools/health.py` | Full wiki health report — orphans, dead links, stale articles, unwritten concepts, LLM gap analysis. |
 | `tools/repair.py` | One-shot graph repair — reciprocal backlinks, dead link pruning, duplicate merging, alias resolution. |
 | `tools/search.py` | Full-text search across wiki articles. Filter by tag or section. No extra dependencies. |
-| `tools/search_hybrid.py` | Hybrid BM25 + vector search with Reciprocal Rank Fusion. Incremental indexing via ChromaDB. Requires `chromadb` + `sentence-transformers`. |
+| `tools/search_hybrid.py` | Shared retrieval search. `--mode lexical` runs full-corpus BM25; `--mode hybrid` fuses BM25 with ChromaDB vectors via Reciprocal Rank Fusion. |
 | `tools/suggest_links.py` | Find articles that should be linked but aren't, using vector similarity. Writes `wiki/meta/suggestions.md`. Requires `search_hybrid`. |
-| `tools/query.py` | Natural language Q&A against the wiki using LLM. Supports markdown and Marp slide output. |
+| `tools/query.py` | Natural language Q&A against the wiki using shared retrieval. Supports `--mode lexical`, `--mode hybrid`, markdown, and Marp slide output. |
 | `tools/split.py` | Split large project files by year into archives. Prevents bloat. |
 | `setup.py` | Setup wizard — creates directory structure, initializes config. |
 

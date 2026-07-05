@@ -122,9 +122,10 @@ python tools/search.py --tag agents "memory"
 python tools/search.py --section concepts "attention"
 ```
 
-**`tools/search_hybrid.py`** — hybrid BM25 + vector search with Reciprocal Rank Fusion. Finds semantically similar articles that don't share exact keywords. Incremental ChromaDB index, updates only changed files on each run.
+**`tools/search_hybrid.py`** — shared retrieval search. `--mode lexical` runs full-corpus BM25 over article bodies. `--mode hybrid` adds ChromaDB vector results and fuses both ranked lists with Reciprocal Rank Fusion. If vector dependencies are unavailable during hybrid search, it falls back to lexical results.
 ```bash
-python tools/search_hybrid.py "transformer attention"
+python tools/search_hybrid.py --mode lexical "LoopDetectedError"
+python tools/search_hybrid.py --mode hybrid "transformer attention"
 python tools/search_hybrid.py --reindex   # force full reindex
 python tools/search_hybrid.py --stats     # show index state
 ```
@@ -139,6 +140,7 @@ python tools/suggest_links.py --dry-run         # preview only
 **`tools/query.py`** — natural language Q&A against the wiki using LLM:
 ```bash
 python tools/query.py "what do we know about transformer attention?"
+python tools/query.py --mode hybrid "what mentions LoopDetectedError?"
 python tools/query.py --slides "overview of agentic architectures"
 ```
 

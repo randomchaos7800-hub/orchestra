@@ -38,17 +38,13 @@ def test_query_prefers_hybrid_search_when_available(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(query_tool, "INDEX_FILE", wiki_dir / "_index.md")
     query_tool.INDEX_FILE.write_text("# Index\n", encoding="utf-8")
 
-    # Prevent fallback local matching from contributing anything.
-    monkeypatch.setattr(query_tool, "get_wiki_sections", lambda: [])
+    monkeypatch.setattr(
+        query_tool,
+        "retrieve_articles",
+        lambda question, wiki_dir, mode, top_k: [{"id": "concepts/agent-memory.md"}],
+    )
 
-    class FakeHybridModule:
-        @staticmethod
-        def hybrid_search(question: str, top_n: int = 6):
-            return [{"id": "concepts/agent-memory.md"}]
-
-    monkeypatch.setitem(sys.modules, "tools.search_hybrid", FakeHybridModule)
-
-    result = query_tool._find_relevant_articles("What is agent memory?")
+    result = query_tool._find_relevant_articles("What is agent memory?", mode="hybrid")
     assert result == [article]
 
 
@@ -62,7 +58,7 @@ def test_query_appends_source_paths(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(query_tool, "WIKI_DIR", wiki_dir)
     monkeypatch.setattr(query_tool, "INDEX_FILE", index_file)
-    monkeypatch.setattr(query_tool, "_find_relevant_articles", lambda question: [article])
+    monkeypatch.setattr(query_tool, "_find_relevant_articles", lambda question, mode="lexical": [article])
     monkeypatch.setattr(query_tool, "make_llm_client", lambda: (MagicMock(), "model", 1000))
     monkeypatch.setattr(
         query_tool,
@@ -101,20 +97,20 @@ def test_hybrid_search_supports_full_corpus_bm25(tmp_path: Path, monkeypatch):
     semantic = wiki_dir / "concepts" / "space-travel.md"
     semantic.write_text("---\ntitle: Space Travel\n---\n\nGeneral travel article.", encoding="utf-8")
 
-    class FakeSearchCollection:
-        def count(self):
-            return 1
-
-        def query(self, query_texts, n_results, include):
-            return {
-                "ids": [["concepts/space-travel.md"]],
-                "metadatas": [[{"title": "Space Travel", "tags": "", "updated": "", "section": "concepts"}]],
-                "documents": [["Space Travel\n\nGeneral travel article."]],
-                "distances": [[0.1]],
-            }
-
     monkeypatch.setattr(search_hybrid, "WIKI_DIR", wiki_dir)
-    monkeypatch.setattr(search_hybrid, "_get_collection", lambda chroma_dir=None: (None, FakeSearchCollection(), None))
+    monkeypatch.setattr(
+        search_hybrid,
+        "retrieve_articles",
+        lambda query, wiki_dir, mode, top_k, chroma_dir: [{
+            "id": "concepts/warp-drive.md",
+            "title": "Warp Drive",
+            "tags": "",
+            "updated": "",
+            "section": "concepts",
+            "fused_score": 1.0,
+            "snippet": "Warp drive exact phrase.",
+        }],
+    )
 
     results = search_hybrid.hybrid_search("warp drive", top_n=3, full_corpus=True)
     ids = [row["id"] for row in results]
