@@ -25,10 +25,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.common import KB_ROOT, WIKI_DIR, split_frontmatter
+from lib.common import KB_ROOT, WIKI_DIR, check_dependencies, print_dependency_error, split_frontmatter
 
 CHROMA_DIR = KB_ROOT / ".chroma"
 COLLECTION_NAME = "wiki_articles"
+VECTOR_DEPENDENCIES = {
+    "chromadb": "chromadb",
+    "sentence-transformers": "sentence_transformers",
+}
 
 
 # -- Article discovery ---------------------------------------------------------
@@ -346,6 +350,15 @@ def main() -> None:
         help="Score BM25 across the full wiki corpus instead of only vector candidates",
     )
     args = parser.parse_args()
+
+    missing = check_dependencies(VECTOR_DEPENDENCIES)
+    if missing:
+        print_dependency_error(
+            "tools/search_hybrid.py",
+            missing,
+            "pip install chromadb sentence-transformers",
+        )
+        sys.exit(1)
 
     if args.stats:
         show_stats()

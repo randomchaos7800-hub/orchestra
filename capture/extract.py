@@ -25,9 +25,10 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib.common import (
+    ConfigValidationError,
     locked_open, load_config, make_llm_client, cached_llm_call,
     parse_llm_json, sanitize_content, git_auto_commit,
-    read_json_file, write_json_file, validate_capture_response,
+    read_json_file, validate_config, write_json_file, validate_capture_response,
 )
 
 # Paths relative to project root
@@ -275,6 +276,12 @@ def main() -> None:
 
     config_path = Path(args.config).resolve() if args.config else None
     config = load_config(config_path)
+    try:
+        validate_config(config, require_capture=True)
+    except ConfigValidationError as exc:
+        print(f"Error: invalid capture config: {exc}", file=sys.stderr)
+        print("Run setup.py or add the missing fields to config.json.", file=sys.stderr)
+        sys.exit(1)
 
     input_path = Path(args.input).resolve()
     print(f"Input: {input_path}")

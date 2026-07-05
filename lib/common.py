@@ -13,11 +13,13 @@ import sys
 import time
 import tempfile
 import hashlib
+import importlib.util
 from copy import deepcopy
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, TypeVar
+from urllib.parse import urlparse
 
 import yaml
 
@@ -175,6 +177,111 @@ def update_text_file(path: Path, default: str, updater: Callable[[str], tuple[st
 # Config loading
 # ---------------------------------------------------------------------------
 
+class ConfigValidationError(ValueError):
+    """Raised when config/config.json is missing required settings."""
+
+
+def _is_valid_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def validate_config(config: dict, *, require_capture: bool = False) -> None:
+    """Validate an Orchestra config dict.
+
+    Raises:
+        ConfigValidationError: with actionable messages for each invalid field.
+    """
+    errors: list[str] = []
+
+    if not isinstance(config, dict):
+        raise ConfigValidationError("Config must be a JSON object.")
+
+    llm = config.get("llm")
+    if not isinstance(llm, dict):
+        errors.append("Config missing llm. Run setup.py or add it to config.json.")
+    else:
+        local_url = llm.get("local_url")
+        if not isinstance(local_url, str) or not local_url.strip():
+            errors.append("Config missing llm.local_url. Run setup.py or add it to config.json.")
+        elif not _is_valid_http_url(local_url):
+            errors.append(
+                f"Invalid LLM URL for llm.local_url: {local_url!r}. "
+                "Use an http(s) OpenAI-compatible endpoint such as http://127.0.0.1:8010/v1."
+            )
+
+        local_model = llm.get("local_model")
+        if not isinstance(local_model, str) or not local_model.strip():
+            errors.append("Config missing llm.local_model. Run setup.py or add it to config.json.")
+
+        max_tokens = llm.get("local_max_tokens")
+        if not isinstance(max_tokens, int) or max_tokens <= 0:
+            errors.append("Config missing llm.local_max_tokens. Add a positive integer to config.json.")
+
+        fallback_fields = {
+            "fallback_url": llm.get("fallback_url", ""),
+            "fallback_model": llm.get("fallback_model", ""),
+            "fallback_api_key_env": llm.get("fallback_api_key_env", ""),
+        }
+        fallback_enabled = any(bool(str(v).strip()) for v in fallback_fields.values())
+        if fallback_enabled:
+            for field, value in fallback_fields.items():
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"Config missing llm.{field}. Run setup.py or add it to config.json.")
+            fallback_url = fallback_fields["fallback_url"]
+            if isinstance(fallback_url, str) and fallback_url.strip() and not _is_valid_http_url(fallback_url):
+                errors.append(
+                    f"Invalid LLM URL for llm.fallback_url: {fallback_url!r}. "
+                    "Use an http(s) OpenAI-compatible endpoint."
+                )
+
+    if require_capture:
+        capture = config.get("capture")
+        if not isinstance(capture, dict):
+            errors.append("Config missing capture. Run setup.py or add it to config.json.")
+        else:
+            projects = capture.get("projects")
+            if not isinstance(projects, dict) or not projects:
+                errors.append("Config missing capture.projects. Add at least one project category.")
+
+    wiki = config.get("wiki")
+    if wiki is not None:
+        sections = wiki.get("sections") if isinstance(wiki, dict) else None
+        if sections is not None and (
+            not isinstance(sections, list)
+            or any(not isinstance(section, str) or not section.strip() for section in sections)
+        ):
+            errors.append("Config field wiki.sections must be a list of non-empty strings.")
+
+    if errors:
+        raise ConfigValidationError("\n".join(errors))
+
+
+def check_dependencies(packages: dict[str, str] | list[str] | tuple[str, ...]) -> list[str]:
+    """Return package names whose import modules are unavailable.
+
+    Args:
+        packages: either {package_name: import_name} or an iterable where the
+            package name and import name are identical.
+    """
+    if isinstance(packages, dict):
+        package_map = packages
+    else:
+        package_map = {name: name for name in packages}
+
+    missing = []
+    for package_name, import_name in package_map.items():
+        if importlib.util.find_spec(import_name) is None:
+            missing.append(package_name)
+    return missing
+
+
+def print_dependency_error(tool_name: str, missing: list[str], install_command: str) -> None:
+    """Print an actionable optional dependency error for CLI tools."""
+    print(f"Error: {tool_name} requires optional dependencies: {', '.join(missing)}", file=sys.stderr)
+    print(f"Install them with: {install_command}", file=sys.stderr)
+
+
 def load_config(config_path: Path | None = None) -> dict:
     """Load full config from config/config.json."""
     path = config_path or (CONFIG_DIR / "config.json")
@@ -184,10 +291,12 @@ def load_config(config_path: Path | None = None) -> dict:
         sys.exit(1)
     with open(path, encoding="utf-8") as f:
         config = json.load(f)
-    missing = [k for k in ("llm",) if k not in config]
-    if missing:
-        print(f"Error: config missing required section(s): {', '.join(missing)}", file=sys.stderr)
-        print(f"  Check {path} against config/config.example.json", file=sys.stderr)
+    try:
+        validate_config(config)
+    except ConfigValidationError as exc:
+        print(f"Error: invalid config at {path}", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        print("Run setup.py or update config.json from config/config.example.json", file=sys.stderr)
         sys.exit(1)
     return config
 
@@ -217,6 +326,7 @@ def make_llm_client(config: dict | None = None) -> tuple:
     local_url = llm_cfg.get("local_url", "http://127.0.0.1:8010/v1")
     local_model = llm_cfg.get("local_model", "gemma4")
     max_tokens = llm_cfg.get("local_max_tokens", 6000)
+    local_error = "not attempted"
 
     # Try local with a health check first (faster than a full completion)
     try:
@@ -224,8 +334,9 @@ def make_llm_client(config: dict | None = None) -> tuple:
         r = httpx.get(local_url.replace("/v1", "/health"), timeout=2)
         if r.status_code == 200:
             return OpenAI(base_url=local_url, api_key="local"), local_model, max_tokens
-    except Exception:
-        pass
+        local_error = f"health check returned HTTP {r.status_code}"
+    except Exception as exc:
+        local_error = f"health check failed: {exc}"
 
     # Try local with a minimal completion as fallback health check
     try:
@@ -236,8 +347,9 @@ def make_llm_client(config: dict | None = None) -> tuple:
         )
         if resp.choices:
             return client, local_model, max_tokens
-    except Exception:
-        pass
+        local_error = "test completion returned no choices"
+    except Exception as exc:
+        local_error = f"test completion failed: {exc}"
 
     # Fallback to remote API
     fallback_url = llm_cfg.get("fallback_url", "")
@@ -245,13 +357,42 @@ def make_llm_client(config: dict | None = None) -> tuple:
     fallback_key_env = llm_cfg.get("fallback_api_key_env", "")
     api_key = os.environ.get(fallback_key_env, "") if fallback_key_env else ""
 
-    if fallback_url and fallback_model and api_key:
-        return OpenAI(base_url=fallback_url, api_key=api_key), fallback_model, max_tokens
+    fallback_error = ""
+    if fallback_url and fallback_model and fallback_key_env:
+        if not api_key:
+            fallback_error = (
+                f"fallback API key missing: set {fallback_key_env}=your-key "
+                "in .env or your shell"
+            )
+        else:
+            try:
+                client = OpenAI(base_url=fallback_url, api_key=api_key)
+                resp = client.chat.completions.create(
+                    model=fallback_model, max_tokens=5,
+                    messages=[{"role": "user", "content": "hi"}], timeout=8,
+                )
+                if resp.choices:
+                    return client, fallback_model, max_tokens
+                fallback_error = "fallback test completion returned no choices"
+            except Exception as exc:
+                status_code = getattr(exc, "status_code", None)
+                if status_code in (401, 403):
+                    fallback_error = (
+                        f"fallback API key rejected by {fallback_url} "
+                        f"(HTTP {status_code}); check {fallback_key_env}"
+                    )
+                else:
+                    fallback_error = f"fallback endpoint failed: {fallback_url} ({exc})"
+    else:
+        fallback_error = "fallback is not fully configured in config.json"
 
     print(
-        f"Error: no LLM available (local down, {fallback_key_env or 'fallback_api_key_env'} not set)",
+        "Error: no LLM available.",
         file=sys.stderr,
     )
+    print(f"  Local endpoint failed: {local_url} ({local_error})", file=sys.stderr)
+    print(f"  {fallback_error}", file=sys.stderr)
+    print("Remediation: start your local OpenAI-compatible server, or configure fallback_url, fallback_model, and fallback_api_key_env.", file=sys.stderr)
     sys.exit(1)
 
 

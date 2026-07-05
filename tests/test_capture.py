@@ -669,7 +669,14 @@ class TestCaptureProcessingBehavior:
         monkeypatch.setattr(
             capture_extract,
             "load_config",
-            lambda _: {"llm": {}, "capture": {"projects": {"GENERAL": "General"}, "min_messages": 1}},
+            lambda _: {
+                "llm": {
+                    "local_url": "http://127.0.0.1:8010/v1",
+                    "local_model": "test-model",
+                    "local_max_tokens": 1000,
+                },
+                "capture": {"projects": {"GENERAL": "General"}, "min_messages": 1},
+            },
         )
         monkeypatch.setattr(capture_extract, "make_llm_client", lambda config=None: (MagicMock(), "test-model", 1000))
         monkeypatch.setattr(capture_extract, "extract_insights", lambda *args, **kwargs: None)

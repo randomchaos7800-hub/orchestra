@@ -10,12 +10,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from lib.common import (
+    ConfigValidationError,
+    check_dependencies,
     parse_frontmatter, split_frontmatter, write_article,
     extract_typed_links, extract_wikilink_slugs,
     parse_llm_json, sanitize_content, llm_call, cached_llm_call,
     build_llm_cache_key, inject_metadata,
     inject_reciprocal_backlinks, load_config,
     LINK_TYPES, INVERSE_LINK_TYPE,
+    validate_config,
     validate_capture_response, validate_compile_plan, validate_article_content,
 )
 
@@ -389,11 +392,73 @@ class TestLoadConfig:
             load_config(tmp_path / "nonexistent.json")
 
     def test_valid_config_loaded(self, tmp_path):
-        cfg = {"llm": {"local_url": "http://localhost:8081/v1"}}
+        cfg = {
+            "llm": {
+                "local_url": "http://localhost:8081/v1",
+                "local_model": "test-model",
+                "local_max_tokens": 1000,
+            }
+        }
         config_file = tmp_path / "config.json"
         config_file.write_text(json.dumps(cfg), encoding="utf-8")
         result = load_config(config_file)
         assert result["llm"]["local_url"] == "http://localhost:8081/v1"
+
+
+class TestConfigValidation:
+    def _valid_config(self) -> dict:
+        return {
+            "llm": {
+                "local_url": "http://127.0.0.1:8010/v1",
+                "local_model": "gemma4",
+                "local_max_tokens": 6000,
+                "fallback_url": "https://openrouter.ai/api/v1",
+                "fallback_model": "z-ai/glm-4.7-flash",
+                "fallback_api_key_env": "OPENROUTER_API_KEY",
+            },
+            "capture": {
+                "projects": {"GENERAL": "General notes."},
+            },
+            "wiki": {
+                "sections": ["concepts", "entities"],
+            },
+        }
+
+    def test_validate_config_accepts_complete_config(self):
+        validate_config(self._valid_config(), require_capture=True)
+
+    def test_validate_config_reports_missing_field(self):
+        cfg = self._valid_config()
+        del cfg["llm"]["local_model"]
+        with pytest.raises(ConfigValidationError, match="Config missing llm.local_model"):
+            validate_config(cfg)
+
+    def test_validate_config_reports_invalid_llm_url(self):
+        cfg = self._valid_config()
+        cfg["llm"]["local_url"] = "not-a-url"
+        with pytest.raises(ConfigValidationError, match="Invalid LLM URL"):
+            validate_config(cfg)
+
+    def test_validate_config_requires_capture_projects_when_requested(self):
+        cfg = self._valid_config()
+        cfg["capture"]["projects"] = {}
+        with pytest.raises(ConfigValidationError, match="capture.projects"):
+            validate_config(cfg, require_capture=True)
+
+    def test_validate_config_rejects_partial_fallback(self):
+        cfg = self._valid_config()
+        cfg["llm"]["fallback_model"] = ""
+        with pytest.raises(ConfigValidationError, match="llm.fallback_model"):
+            validate_config(cfg)
+
+
+class TestDependencyChecks:
+    def test_check_dependencies_returns_missing_packages(self):
+        missing = check_dependencies({
+            "python": "sys",
+            "missing-pkg": "definitely_missing_orchestra_dependency",
+        })
+        assert missing == ["missing-pkg"]
 
 
 class TestInjectReciprocalBacklinks:
