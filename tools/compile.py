@@ -434,7 +434,8 @@ def main():
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    client, model, max_tokens = make_llm_client()
+    config = load_config()
+    client, model, max_tokens = make_llm_client(config)
     sources = load_sources()
 
     # -- Stale recompile mode --

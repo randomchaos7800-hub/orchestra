@@ -24,8 +24,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from lib.common import WIKI_DIR, parse_frontmatter, locked_write_text
-from search_hybrid import _get_collection, _collect_articles, _rel
+from lib.common import (
+    WIKI_DIR,
+    check_dependencies,
+    locked_write_text,
+    parse_frontmatter,
+    print_dependency_error,
+)
+from search_hybrid import VECTOR_DEPENDENCIES, _get_collection, _collect_articles, _rel
 
 SUGGESTIONS_FILE = WIKI_DIR / "meta" / "suggestions.md"
 
@@ -184,6 +190,15 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true",
                         help="Print to stdout instead of writing suggestions.md")
     args = parser.parse_args()
+
+    missing = check_dependencies(VECTOR_DEPENDENCIES)
+    if missing:
+        print_dependency_error(
+            "tools/suggest_links.py",
+            missing,
+            "pip install chromadb sentence-transformers",
+        )
+        sys.exit(1)
 
     results = generate_suggestions(threshold=args.threshold)
 

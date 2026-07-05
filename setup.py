@@ -15,12 +15,69 @@ import os
 import shutil
 import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from lib.common import locked_write_text, write_json_file
+from urllib.parse import urlparse
 
 BASE_DIR = Path(__file__).parent
+
+
+def locked_write_text(path: Path, content: str) -> None:
+    """Write text for setup-created files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def write_json_file(path: Path, data) -> None:
+    """Write newline-terminated JSON for setup-created files."""
+    locked_write_text(path, json.dumps(data, indent=2) + "\n")
+
+
+def _valid_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _validate_setup_config(config: dict) -> list[str]:
+    """Return actionable setup config validation errors."""
+    errors: list[str] = []
+    llm = config.get("llm")
+    if not isinstance(llm, dict):
+        errors.append("Config missing llm. Run setup.py or add it to config.json.")
+        return errors
+
+    local_url = llm.get("local_url")
+    if not isinstance(local_url, str) or not local_url.strip():
+        errors.append("Config missing llm.local_url. Run setup.py or add it to config.json.")
+    elif not _valid_http_url(local_url):
+        errors.append(f"Invalid LLM URL for llm.local_url: {local_url!r}.")
+
+    if not isinstance(llm.get("local_model"), str) or not llm.get("local_model", "").strip():
+        errors.append("Config missing llm.local_model. Run setup.py or add it to config.json.")
+
+    if not isinstance(llm.get("local_max_tokens"), int) or llm.get("local_max_tokens", 0) <= 0:
+        errors.append("Config missing llm.local_max_tokens. Add a positive integer to config.json.")
+
+    capture = config.get("capture")
+    if not isinstance(capture, dict):
+        errors.append("Config missing capture. Run setup.py or add it to config.json.")
+    elif not isinstance(capture.get("projects"), dict) or not capture.get("projects"):
+        errors.append("Config missing capture.projects. Add at least one project category.")
+
+    return errors
+
+
+def _is_packaging_invocation() -> bool:
+    """Detect setuptools commands so setup.py can coexist with the setup wizard."""
+    packaging_commands = {
+        "bdist_wheel",
+        "build",
+        "build_ext",
+        "develop",
+        "dist_info",
+        "editable_wheel",
+        "egg_info",
+        "sdist",
+    }
+    return any(arg in packaging_commands for arg in sys.argv[1:])
 
 
 def create_directories() -> None:
@@ -199,6 +256,22 @@ def prompt_llm_config() -> None:
     print("\n  [ok] config/config.json updated with LLM settings")
 
 
+def validate_created_config() -> None:
+    """Validate config.json after setup writes or updates it."""
+    config_path = BASE_DIR / "config" / "config.json"
+    if not config_path.exists():
+        return
+    with open(config_path, encoding="utf-8") as f:
+        config = json.load(f)
+    errors = _validate_setup_config(config)
+    if not errors:
+        print("  [ok] config/config.json validated")
+        return
+    print("  [warn] config/config.json needs attention:")
+    for line in errors:
+        print(f"        {line}")
+
+
 def print_next_steps() -> None:
     """Print guidance for what to do after setup."""
     print("\n" + "=" * 60)
@@ -257,8 +330,15 @@ def main() -> None:
     else:
         print("\n  [skip] Non-interactive mode, skipping LLM configuration prompts")
 
+    print("\nValidating configuration...")
+    validate_created_config()
+
     print_next_steps()
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and not _is_packaging_invocation():
     main()
+else:
+    from setuptools import setup
+
+    setup()

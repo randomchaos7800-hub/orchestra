@@ -30,5 +30,11 @@ orchestra-compile = "tools.compile:main"
 orchestra-search  = "tools.search:main"
 orchestra-query   = "tools.query:main"
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["capture*", "lib*", "tools*"]
+exclude = ["config*", "docs*", "tests*"]
+namespaces = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

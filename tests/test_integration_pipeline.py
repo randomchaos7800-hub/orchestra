@@ -56,7 +56,11 @@ def test_capture_compile_query_pipeline_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setattr(capture_extract, "PROCESSED_PATH", root / "capture" / "processed.json")
 
     config = {
-        "llm": {"local_url": "http://127.0.0.1:8010/v1"},
+        "llm": {
+            "local_url": "http://127.0.0.1:8010/v1",
+            "local_model": "test-model",
+            "local_max_tokens": 1000,
+        },
         "capture": {
             "projects": {
                 "GENERAL": "Cross-cutting insights.",
@@ -68,6 +72,7 @@ def test_capture_compile_query_pipeline_is_idempotent(tmp_path, monkeypatch):
         },
         "wiki": {"sections": ["concepts", "entities", "events", "research", "tools"]},
     }
+    (config_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
 
     conversation = {
         "id": "conv-1",
@@ -85,7 +90,7 @@ def test_capture_compile_query_pipeline_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setattr(capture_extract, "load_config", lambda _: config)
     monkeypatch.setattr(capture_extract, "detect_and_parse", lambda _: [conversation])
     monkeypatch.setattr(capture_extract, "make_llm_client", lambda config=None: (MagicMock(), "model", 1000))
-    monkeypatch.setattr(compile_tool, "make_llm_client", lambda: (MagicMock(), "model", 1000))
+    monkeypatch.setattr(compile_tool, "make_llm_client", lambda config=None: (MagicMock(), "model", 1000))
     monkeypatch.setattr(query_tool, "make_llm_client", lambda: (MagicMock(), "model", 1000))
 
     monkeypatch.setattr(
